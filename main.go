@@ -5,11 +5,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"time"
 
+	"github.com/ustclug/rsync-proxy/pkg/log"
 	"github.com/ustclug/rsync-proxy/pkg/server"
 )
 
@@ -36,6 +36,7 @@ func sendReloadRequest(addr string) error {
 func main() {
 	var reload bool
 	s := server.New()
+	log.AddFlags(flag.CommandLine)
 	flag.StringVar(&s.ListenAddr, "listen-addr", "0.0.0.0:9527", "Address to listen on for reverse proxy")
 	flag.StringVar(&s.WebListenAddr, "web.listen-addr", "127.0.0.1:9528", "Address to listen on for API")
 	flag.StringVar(&s.ConfigPath, "config", "/etc/rsync-proxy/config.toml", "Path to config file")

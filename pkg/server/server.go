@@ -6,12 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/ustclug/rsync-proxy/pkg/log"
 )
 
 const (
@@ -83,8 +84,8 @@ func (s *Server) complete() error {
 	if !ok {
 		return fmt.Errorf("default upstream not found, upstream=%s", s.DefaultUpstreamName)
 	}
-	// FIXME
-	log.Printf("[INFO] default upstream: %s", s.DefaultUpstreamName)
+
+	log.V(3).Infof("[INFO] default upstream: %s", s.DefaultUpstreamName)
 
 	s.reloadLock.Lock()
 	s.modules = modules
@@ -146,7 +147,7 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 	moduleName := string(buf[:n-1]) // trim trailing \n
 	upstreamAddr, ok := s.modules[moduleName]
 	if !ok {
-		log.Printf("[DEBUG] unknown module: %s, fallback to default upstream", moduleName)
+		log.V(4).Infof("[DEBUG] unknown module: %s, fallback to default upstream", moduleName)
 		upstreamAddr = s.modules[DefaultModuleName]
 	}
 	s.reloadLock.RUnlock()
@@ -205,8 +206,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	downConn := conn.(*net.TCPConn)
 	err := s.relay(ctx, downConn)
 	if err != nil {
-		// FIXME:
-		log.Println(err)
+		log.V(2).Infof("[WARN] handleConn: %s", err)
 	}
 }
 
@@ -227,8 +227,7 @@ func (s *Server) runHTTPServer() error {
 
 		err := s.LoadConfigFromFile()
 		if err != nil {
-			// FIXME:
-			log.Printf("Load config: %s", err)
+			log.V(1).Infof("[ERROR] Load config: %s", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			resp.Message = "Failed to reload config"
 		} else {
@@ -237,8 +236,7 @@ func (s *Server) runHTTPServer() error {
 		}
 		_ = enc.Encode(&resp)
 	})
-	// FIXME:
-	log.Printf("[INFO] HTTP server listening on %s", s.WebListenAddr)
+	log.V(3).Infof("[INFO] HTTP server listening on %s", s.WebListenAddr)
 	err := http.ListenAndServe(s.WebListenAddr, &mux)
 	if err != nil {
 		return err
@@ -250,12 +248,11 @@ func (s *Server) Run(ctx context.Context) error {
 	go func() {
 		err := s.runHTTPServer()
 		if err != nil {
-			// FIXME
 			log.Fatalln(err)
 		}
 	}()
 
-	log.Printf("[INFO] Rsync proxy listening on %s", s.ListenAddr)
+	log.V(3).Infof("[INFO] Rsync proxy listening on %s", s.ListenAddr)
 	listener, err := net.Listen("tcp", s.ListenAddr)
 	if err != nil {
 		return err

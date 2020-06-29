@@ -2,10 +2,11 @@ package server
 
 import (
 	"io"
-	"log"
 	"os"
 
 	"github.com/pelletier/go-toml"
+
+	"github.com/ustclug/rsync-proxy/pkg/log"
 )
 
 type Upstream struct {
@@ -20,7 +21,7 @@ type Config struct {
 }
 
 func (s *Server) LoadConfig(r io.Reader) error {
-	log.Printf("[INFO] loading config")
+	log.V(3).Infof("[INFO] loading config")
 
 	dec := toml.NewDecoder(r)
 	var c Config
