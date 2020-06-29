@@ -3,10 +3,12 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"strconv"
 	"sync"
 	"time"
@@ -26,7 +28,9 @@ var (
 type Server struct {
 	// --- Options section
 	// Listen Address
-	ListenAddr string
+	ListenAddr    string
+	WebListenAddr string
+	ConfigPath    string
 	// name -> upstream
 	Upstreams           map[string]*Upstream
 	DefaultUpstreamName string
@@ -34,8 +38,9 @@ type Server struct {
 	WriteTimeout        time.Duration
 	// ---
 
-	dialer  net.Dialer
-	bufPool sync.Pool
+	reloadLock sync.RWMutex
+	dialer     net.Dialer
+	bufPool    sync.Pool
 	// name -> address
 	modules map[string]string
 }
@@ -52,9 +57,6 @@ func New() *Server {
 }
 
 func (s *Server) complete() error {
-	if len(s.ListenAddr) == 0 {
-		return fmt.Errorf("missing ListenAddress")
-	}
 	if len(s.Upstreams) == 0 {
 		return fmt.Errorf("no upstream found")
 	}
@@ -76,15 +78,18 @@ func (s *Server) complete() error {
 			s.DefaultUpstreamName = upstreamName
 		}
 	}
-	s.modules = modules
 
 	defaultUpstream, ok := s.Upstreams[s.DefaultUpstreamName]
 	if !ok {
 		return fmt.Errorf("default upstream not found, upstream=%s", s.DefaultUpstreamName)
 	}
 	// FIXME
-	log.Printf("INFO: default upstream: %s", s.DefaultUpstreamName)
+	log.Printf("[INFO] default upstream: %s", s.DefaultUpstreamName)
+
+	s.reloadLock.Lock()
+	s.modules = modules
 	s.modules[DefaultModuleName] = net.JoinHostPort(defaultUpstream.Host, strconv.Itoa(defaultUpstream.Port))
+	s.reloadLock.Unlock()
 
 	// .Upstreams is no longer used, reclaims the memory
 	s.Upstreams = nil
@@ -137,12 +142,14 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 		return s.listAllModules(downConn)
 	}
 
+	s.reloadLock.RLock()
 	moduleName := string(buf[:n-1]) // trim trailing \n
 	upstreamAddr, ok := s.modules[moduleName]
 	if !ok {
-		log.Printf("DEBUG: unknown module: %s, fallback to default upstream", moduleName)
+		log.Printf("[DEBUG] unknown module: %s, fallback to default upstream", moduleName)
 		upstreamAddr = s.modules[DefaultModuleName]
 	}
+	s.reloadLock.RUnlock()
 
 	conn, err := s.dialer.DialContext(ctx, "tcp", upstreamAddr)
 	if err != nil {
@@ -203,12 +210,52 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	}
 }
 
-func (s *Server) Run(ctx context.Context) error {
-	err := s.complete()
+func (s *Server) runHTTPServer() error {
+	type Response struct {
+		Message string `json:"message"`
+	}
+
+	var mux http.ServeMux
+	mux.HandleFunc("/reload", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var resp Response
+		enc := json.NewEncoder(w)
+
+		err := s.LoadConfigFromFile()
+		if err != nil {
+			// FIXME:
+			log.Printf("Load config: %s", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			resp.Message = "Failed to reload config"
+		} else {
+			w.WriteHeader(http.StatusOK)
+			resp.Message = "Successfully reloaded"
+		}
+		_ = enc.Encode(&resp)
+	})
+	// FIXME:
+	log.Printf("[INFO] HTTP server listening on %s", s.WebListenAddr)
+	err := http.ListenAndServe(s.WebListenAddr, &mux)
 	if err != nil {
 		return err
 	}
+	return nil
+}
 
+func (s *Server) Run(ctx context.Context) error {
+	go func() {
+		err := s.runHTTPServer()
+		if err != nil {
+			// FIXME
+			log.Fatalln(err)
+		}
+	}()
+
+	log.Printf("[INFO] Rsync proxy listening on %s", s.ListenAddr)
 	listener, err := net.Listen("tcp", s.ListenAddr)
 	if err != nil {
 		return err
