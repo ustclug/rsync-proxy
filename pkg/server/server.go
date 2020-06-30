@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -100,11 +101,20 @@ func (s *Server) complete() error {
 
 func (s *Server) listAllModules(downConn net.Conn) error {
 	var buf bytes.Buffer
+	modules := make([]string, 0, len(s.modules))
+
+	s.reloadLock.RLock()
 	for name := range s.modules {
-		if name == DefaultModuleName {
-			continue
+		if name != DefaultModuleName {
+			modules = append(modules, name)
 		}
-		buf.WriteString(name + "\n")
+	}
+	s.reloadLock.RUnlock()
+
+	sort.Strings(modules)
+	for _, name := range modules {
+		buf.WriteString(name)
+		buf.WriteRune('\n')
 	}
 	buf.Write(RsyncdExit)
 	_, _ = s.writeWithTimeout(downConn, buf.Bytes())
