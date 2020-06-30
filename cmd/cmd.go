@@ -66,7 +66,3 @@ func New() *cobra.Command {
 
 	return c
 }
-
-func main() {
-
-}

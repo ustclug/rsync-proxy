@@ -266,9 +266,9 @@ func (s *Server) Run(ctx context.Context) error {
 
 		conn, err := listener.Accept()
 		if err != nil {
+			log.V(2).Infof("[WARN] Accept connection: %s", err)
 			continue
 		}
 		go s.handleConn(ctx, conn)
 	}
-	return nil
 }
