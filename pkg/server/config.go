@@ -41,9 +41,5 @@ func (s *Server) LoadConfigFromFile() error {
 		return err
 	}
 	defer f.Close()
-	err = s.LoadConfig(f)
-	if err != nil {
-		return err
-	}
-	return nil
+	return s.LoadConfig(f)
 }
