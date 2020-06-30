@@ -1,10 +1,11 @@
 package log
 
 import (
-	"flag"
 	"fmt"
 	"log"
 	"os"
+
+	"github.com/spf13/pflag"
 )
 
 type Verbose bool
@@ -25,8 +26,8 @@ func V(lvl int) Verbose {
 	return lvl <= verbosity
 }
 
-func AddFlags(flagSet *flag.FlagSet) {
-	flagSet.IntVar(&verbosity, "v", 2, "Number for the log level verbosity. The higher the more verbose.")
+func AddFlags(flagSet *pflag.FlagSet) {
+	flagSet.IntVarP(&verbosity, "verbose", "v", 2, "Number for the log level verbosity. The higher the more verbose.")
 }
 
 func Fatalf(format string, a ...interface{}) {
