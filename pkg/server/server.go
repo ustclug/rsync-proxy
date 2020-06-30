@@ -17,8 +17,7 @@ import (
 )
 
 const (
-	TCPBufferSize     = 256
-	DefaultModuleName = "*"
+	TCPBufferSize = 256
 )
 
 var (
@@ -34,10 +33,9 @@ type Server struct {
 	WebListenAddr string
 	ConfigPath    string
 	// name -> upstream
-	Upstreams           map[string]*Upstream
-	DefaultUpstreamName string
-	ReadTimeout         time.Duration
-	WriteTimeout        time.Duration
+	Upstreams    map[string]*Upstream
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
 	// ---
 
 	reloadLock sync.RWMutex
@@ -76,21 +74,10 @@ func (s *Server) complete() error {
 			}
 			modules[moduleName] = addr
 		}
-		if len(s.DefaultUpstreamName) == 0 {
-			s.DefaultUpstreamName = upstreamName
-		}
 	}
-
-	defaultUpstream, ok := s.Upstreams[s.DefaultUpstreamName]
-	if !ok {
-		return fmt.Errorf("default upstream not found, upstream=%s", s.DefaultUpstreamName)
-	}
-
-	log.V(3).Infof("[INFO] default upstream: %s", s.DefaultUpstreamName)
 
 	s.reloadLock.Lock()
 	s.modules = modules
-	s.modules[DefaultModuleName] = net.JoinHostPort(defaultUpstream.Host, strconv.Itoa(defaultUpstream.Port))
 	s.reloadLock.Unlock()
 
 	// .Upstreams is no longer used, reclaims the memory
@@ -105,9 +92,7 @@ func (s *Server) listAllModules(downConn net.Conn) error {
 
 	s.reloadLock.RLock()
 	for name := range s.modules {
-		if name != DefaultModuleName {
-			modules = append(modules, name)
-		}
+		modules = append(modules, name)
 	}
 	s.reloadLock.RUnlock()
 
@@ -153,14 +138,17 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 		return s.listAllModules(downConn)
 	}
 
-	s.reloadLock.RLock()
 	moduleName := string(buf[:n-1]) // trim trailing \n
+
+	s.reloadLock.RLock()
 	upstreamAddr, ok := s.modules[moduleName]
-	if !ok {
-		log.V(4).Infof("[DEBUG] unknown module: %s, fallback to default upstream", moduleName)
-		upstreamAddr = s.modules[DefaultModuleName]
-	}
 	s.reloadLock.RUnlock()
+
+	if !ok {
+		_, _ = s.writeWithTimeout(downConn, []byte(fmt.Sprintf("unknown module: %s\n", moduleName)))
+		_, _ = s.writeWithTimeout(downConn, RsyncdExit)
+		return nil
+	}
 
 	conn, err := s.dialer.DialContext(ctx, "tcp", upstreamAddr)
 	if err != nil {

@@ -9,8 +9,6 @@ import (
 func TestLoadConfig(t *testing.T) {
 	s := New()
 	configContent := `
-default_upstream = "u1"
-
 [upstreams.u1]
 host = "127.0.0.1"
 port = 1234
@@ -35,21 +33,15 @@ modules = ["bar2"]
 		"foo2": "127.0.0.1:1234",
 		"bar1": "127.0.0.1:1235",
 		"bar2": "example.com:1235",
-		"*":    "127.0.0.1:1234",
 	}
 	if !reflect.DeepEqual(expectedMods, s.modules) {
 		t.Errorf("Wrong modules\nExpected: %#v\nGot: %#v\n", expectedMods, s.modules)
-	}
-	if s.DefaultUpstreamName != "u1" {
-		t.Errorf("Wrong default upstream\nExpected: %s\nGot: %s", "u1", s.DefaultUpstreamName)
 	}
 }
 
 func TestDuplicatedModulesInConfig(t *testing.T) {
 	s := New()
 	configContent := `
-default_upstream = "u1"
-
 [upstreams.u1]
 host = "127.0.0.1"
 port = 1234

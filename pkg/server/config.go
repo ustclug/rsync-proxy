@@ -10,14 +10,13 @@ import (
 )
 
 type Upstream struct {
-	Host    string
-	Port    int
-	Modules []string
+	Host    string   `toml:"host"`
+	Port    int      `toml:"port"`
+	Modules []string `toml:"modules"`
 }
 
 type Config struct {
-	Upstreams           map[string]*Upstream `toml:"upstreams"`
-	DefaultUpstreamName string               `toml:"default_upstream"`
+	Upstreams map[string]*Upstream `toml:"upstreams"`
 }
 
 func (s *Server) LoadConfig(r io.Reader) error {
@@ -31,7 +30,6 @@ func (s *Server) LoadConfig(r io.Reader) error {
 	}
 
 	s.Upstreams = c.Upstreams
-	s.DefaultUpstreamName = c.DefaultUpstreamName
 	return s.complete()
 }
 
