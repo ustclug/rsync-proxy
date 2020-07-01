@@ -29,6 +29,12 @@ jobs:
     - name: Install rsync
       run: sudo apt install -y rsync
 
+    - name: golangci-lint
+      uses: golangci/golangci-lint-action@v1
+      with:
+        # Required: the version of golangci-lint is required and must be specified without patch version: we always use the latest patch version.
+        version: v1.26
+
     - name: Get dependencies and run tests
       run: go test -race -v ./...
 

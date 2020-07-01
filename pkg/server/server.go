@@ -110,6 +110,7 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 	defer downConn.Close()
 
 	buf := s.bufPool.Get().([]byte)
+	// nolint:staticcheck
 	defer s.bufPool.Put(buf)
 
 	n, err := s.readWithTimeout(downConn, buf)
