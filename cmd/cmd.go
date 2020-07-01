@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"runtime"
 	"time"
 
@@ -22,7 +21,7 @@ var (
 	BuildDate = "1970-01-01T00:00:00Z" // build date in ISO8601 format, output of $(date -u +'%Y-%m-%dT%H:%M:%SZ')
 )
 
-func sendReloadRequest(addr string) error {
+func SendReloadRequest(addr string, stdout, stderr io.Writer) error {
 	client := http.Client{
 		Timeout: time.Second * 10,
 	}
@@ -34,15 +33,15 @@ func sendReloadRequest(addr string) error {
 	defer resp.Body.Close()
 	var out io.Writer
 	if resp.StatusCode < 300 {
-		out = os.Stdout
+		out = stdout
 	} else {
-		out = os.Stderr
+		out = stderr
 	}
 	_, _ = io.Copy(out, resp.Body)
 	return nil
 }
 
-func printVersion() error {
+func printVersion(stdout io.Writer) error {
 	type Info struct {
 		GitCommit string
 		BuildDate string
@@ -51,7 +50,7 @@ func printVersion() error {
 		Compiler  string
 		Platform  string
 	}
-	enc := json.NewEncoder(os.Stdout)
+	enc := json.NewEncoder(stdout)
 	return enc.Encode(Info{
 		GitCommit: GitCommit,
 		BuildDate: BuildDate,
@@ -76,10 +75,12 @@ func New() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			switch {
 			case reload:
-				return sendReloadRequest(s.WebListenAddr)
+				return SendReloadRequest(s.WebListenAddr, cmd.OutOrStdout(), cmd.ErrOrStderr())
 			case version:
-				return printVersion()
+				return printVersion(cmd.OutOrStdout())
 			}
+
+			log.SetOutput(cmd.OutOrStdout(), cmd.ErrOrStderr())
 
 			err := s.LoadConfigFromFile()
 			if err != nil {

@@ -204,7 +204,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	downConn := conn.(*net.TCPConn)
 	err := s.relay(ctx, downConn)
 	if err != nil {
-		log.V(2).Infof("[WARN] handleConn: %s", err)
+		log.V(2).Errorf("[WARN] handleConn: %s", err)
 	}
 }
 
@@ -225,7 +225,7 @@ func (s *Server) runHTTPServer() error {
 
 		err := s.LoadConfigFromFile()
 		if err != nil {
-			log.V(1).Infof("[ERROR] Load config: %s", err)
+			log.Errorf("[ERROR] Load config: %s", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			resp.Message = "Failed to reload config"
 		} else {
@@ -266,7 +266,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 		conn, err := listener.Accept()
 		if err != nil {
-			log.V(2).Infof("[WARN] Accept connection: %s", err)
+			log.V(2).Errorf("[WARN] Accept connection: %s", err)
 			continue
 		}
 		go s.handleConn(ctx, conn)

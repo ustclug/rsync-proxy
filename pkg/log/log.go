@@ -2,6 +2,7 @@ package log
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 
@@ -14,12 +15,24 @@ var (
 	verbosity int
 
 	stderr = log.New(os.Stderr, "", log.Ldate|log.Ltime|log.Lshortfile)
+	stdout = log.New(os.Stdout, "", log.Ldate|log.Ltime|log.Lshortfile)
 )
 
 func (v Verbose) Infof(format string, a ...interface{}) {
 	if v {
+		_ = stdout.Output(2, fmt.Sprintf(format, a...))
+	}
+}
+
+func (v Verbose) Errorf(format string, a ...interface{}) {
+	if v {
 		_ = stderr.Output(2, fmt.Sprintf(format, a...))
 	}
+}
+
+func SetOutput(out, errOut io.Writer) {
+	stdout.SetOutput(out)
+	stderr.SetOutput(errOut)
 }
 
 func V(lvl int) Verbose {
@@ -36,4 +49,8 @@ func Fatalf(format string, a ...interface{}) {
 
 func Fatalln(a ...interface{}) {
 	stderr.Fatalln(a...)
+}
+
+func Errorf(format string, a ...interface{}) {
+	stderr.Printf(format, a...)
 }
