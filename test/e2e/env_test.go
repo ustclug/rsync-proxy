@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ustclug/rsync-proxy/cmd"
@@ -28,6 +29,8 @@ func TestMain(m *testing.M) {
 }
 
 func TestRsyncProxy(t *testing.T) {
+	// run tests in order
+
 	t.Run("ListModules", func(t *testing.T) {
 		outputBytes, err := exec.Command("rsync", "rsync://127.0.0.1:9527/").Output()
 		if err != nil {
@@ -97,13 +100,12 @@ func TestRsyncProxy(t *testing.T) {
 			t.Fatal(err)
 		}
 		var reloadOutput bytes.Buffer
-		client := cmd.New()
-		client.SetErr(&reloadOutput)
-		client.SetOut(&reloadOutput)
-		client.SetArgs([]string{"--reload"})
-		err = client.Execute()
+		err = cmd.SendReloadRequest("127.0.0.1:9528", &reloadOutput, &reloadOutput)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if !strings.Contains(reloadOutput.String(), "Successfully reloaded") {
+			t.Errorf("Unexpeceted output: %s", reloadOutput.String())
 		}
 
 		outputBytes, err := exec.Command("rsync", "rsync://127.0.0.1:9527/").Output()
@@ -136,6 +138,21 @@ func TestRsyncProxy(t *testing.T) {
 		expected := []byte("3.4")
 		if !reflect.DeepEqual(got, expected) {
 			t.Errorf("Unexpected content\nExpected: %s\nGot: %s", string(expected), string(got))
+		}
+	})
+
+	t.Run("ReloadConfigWithDuplicatedModules", func(t *testing.T) {
+		err := e.UpdateRsyncProxyConfig(config3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var reloadOutput bytes.Buffer
+		err = cmd.SendReloadRequest("127.0.0.1:9528", &reloadOutput, &reloadOutput)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(reloadOutput.String(), "Failed to reload config") {
+			t.Errorf("Unexpeceted output: %s", reloadOutput.String())
 		}
 	})
 }

@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io/ioutil"
@@ -38,12 +39,26 @@ host = "127.0.0.1"
 port = 1235
 modules = ["bar", "baz"]
 `)
+
+	config3 = []byte(`
+[upstreams.u1]
+host = "127.0.0.1"
+port = 1234
+modules = ["foo"]
+
+[upstreams.u2]
+host = "127.0.0.1"
+port = 1235
+modules = ["bar", "foo"]
+`)
 )
 
 type Env struct {
 	cancel     context.CancelFunc
 	rsyncds    []*exec.Cmd
 	configFile string
+	proxyOut   bytes.Buffer
+	proxyErr   bytes.Buffer
 }
 
 func (e *Env) Setup() error {
@@ -81,6 +96,8 @@ func (e *Env) Setup() error {
 	e.rsyncds = []*exec.Cmd{r1, r2}
 
 	proxyProg := cmd.New()
+	proxyProg.SetOut(&e.proxyOut)
+	proxyProg.SetErr(&e.proxyErr)
 	proxyProg.SetArgs([]string{"--config", f.Name()})
 	go func() {
 		_ = proxyProg.ExecuteContext(ctx)
@@ -96,6 +113,11 @@ func (e *Env) Setup() error {
 
 func (e *Env) UpdateRsyncProxyConfig(data []byte) error {
 	return ioutil.WriteFile(e.configFile, data, 0644)
+}
+
+func (e *Env) GetRsyncProxyOutput() {
+	fmt.Printf("Stdout: %s\n", e.proxyOut.String())
+	fmt.Printf("Stderr: %s\n", e.proxyErr.String())
 }
 
 func (e *Env) Teardown() {
