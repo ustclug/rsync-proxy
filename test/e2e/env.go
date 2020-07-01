@@ -3,6 +3,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"io/ioutil"
 	"net"
 	"os"
 	"os/exec"
@@ -13,21 +14,59 @@ import (
 	"github.com/ustclug/rsync-proxy/cmd"
 )
 
+var (
+	config1 = []byte(`
+[upstreams.u1]
+host = "127.0.0.1"
+port = 1234
+modules = ["foo"]
+
+[upstreams.u2]
+host = "127.0.0.1"
+port = 1235
+modules = ["bar"]
+`)
+
+	config2 = []byte(`
+[upstreams.u1]
+host = "127.0.0.1"
+port = 1234
+modules = ["foo"]
+
+[upstreams.u2]
+host = "127.0.0.1"
+port = 1235
+modules = ["bar", "baz"]
+`)
+)
+
 type Env struct {
-	cancel  context.CancelFunc
-	rsyncds []*exec.Cmd
+	cancel     context.CancelFunc
+	rsyncds    []*exec.Cmd
+	configFile string
 }
 
 func (e *Env) Setup() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	e.cancel = cancel
-	_ = ctx
 
 	cwd, _ := os.Getwd()
 	err := setupDataDirs()
 	if err != nil {
 		return err
 	}
+
+	f, err := ioutil.TempFile("", "rsync-proxy-e2e-*")
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(config1)
+	if err != nil {
+		return err
+	}
+	_ = f.Sync()
+	_ = f.Close()
+	e.configFile = f.Name()
 
 	fixturesDir := filepath.Join(cwd, "../fixtures")
 	r1, err := runRsyncd(ctx, 1234, filepath.Join(fixturesDir, "foo.conf"))
@@ -42,7 +81,7 @@ func (e *Env) Setup() error {
 	e.rsyncds = []*exec.Cmd{r1, r2}
 
 	proxyProg := cmd.New()
-	proxyProg.SetArgs([]string{"--config", filepath.Join(fixturesDir, "config.toml")})
+	proxyProg.SetArgs([]string{"--config", f.Name()})
 	go func() {
 		_ = proxyProg.ExecuteContext(ctx)
 	}()
@@ -55,9 +94,14 @@ func (e *Env) Setup() error {
 	return nil
 }
 
+func (e *Env) UpdateRsyncProxyConfig(data []byte) error {
+	return ioutil.WriteFile(e.configFile, data, 0644)
+}
+
 func (e *Env) Teardown() {
 	e.cancel()
 	_ = os.RemoveAll("/tmp/rsync-proxy-e2e/")
+	_ = os.Remove(e.configFile)
 	for _, prog := range e.rsyncds {
 		_ = prog.Wait()
 	}
@@ -118,6 +162,7 @@ func setupDataDirs() error {
 		"/tmp/rsync-proxy-e2e/foo/v3.1/data":  []byte("3.1"),
 		"/tmp/rsync-proxy-e2e/bar/v3.2/data":  []byte("3.2"),
 		"/tmp/rsync-proxy-e2e/bar/v3.3/data":  []byte("3.3"),
+		"/tmp/rsync-proxy-e2e/baz/v3.4/data":  []byte("3.4"),
 	}
 	for fp, data := range files {
 		err := writeFile(fp, data)
