@@ -1,0 +1,9 @@
+[Unit]
+Description=Rsync Proxy
+
+[Service]
+ExecStart=/usr/local/bin/rsync-proxy -v=3 --config=/etc/rsync-proxy/config.toml --listen-addr=0.0.0.0:9527 --web.listen-addr=127.0.0.1:9528
+ExecReload=/usr/local/bin/rsync-proxy --web.listen-addr=127.0.0.1:9528 --reload
+
+[Install]
+WantedBy=multi-user.target

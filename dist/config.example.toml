@@ -1,0 +1,16 @@
+# Example config
+
+[upstreams.u1]
+host = "127.0.0.1"
+port = 1234
+modules = ["foo"]
+
+[upstreams.u2]
+host = "192.168.0.10"
+port = 1235
+modules = ["bar"]
+
+[upstreams.u3]
+host = "rsync.example.internal"
+port = 1235
+modules = ["baz"]

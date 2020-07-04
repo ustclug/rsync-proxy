@@ -11,9 +11,11 @@ PLATFORM_LIST = darwin-amd64 linux-amd64
 
 darwin-amd64:
 	GOARCH=amd64 GOOS=darwin $(GOBUILD) -o $(NAME)-$(VERSION)-$@/$(NAME)
+	cp dist/* README.md $(NAME)-$(VERSION)-$@/
 
 linux-amd64:
 	GOARCH=amd64 GOOS=linux $(GOBUILD) -o $(NAME)-$(VERSION)-$@/$(NAME)
+	cp dist/* README.md $(NAME)-$(VERSION)-$@/
 
 all-arch: $(PLATFORM_LIST)
 
