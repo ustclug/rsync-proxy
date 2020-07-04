@@ -148,8 +148,8 @@ func TestRsyncProxy(t *testing.T) {
 		}
 		var reloadOutput bytes.Buffer
 		err = cmd.SendReloadRequest("127.0.0.1:9528", &reloadOutput, &reloadOutput)
-		if err != nil {
-			t.Fatal(err)
+		if err == nil {
+			t.Errorf("Unexpected success")
 		}
 		if !strings.Contains(reloadOutput.String(), "Failed to reload config") {
 			t.Errorf("Unexpeceted output: %s", reloadOutput.String())

@@ -36,9 +36,10 @@ func SendReloadRequest(addr string, stdout, stderr io.Writer) error {
 		out = stdout
 	} else {
 		out = stderr
+		err = fmt.Errorf("failed to reload")
 	}
 	_, _ = io.Copy(out, resp.Body)
-	return nil
+	return err
 }
 
 func printVersion(stdout io.Writer) error {
