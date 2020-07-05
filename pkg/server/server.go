@@ -94,6 +94,7 @@ func (s *Server) listAllModules(downConn net.Conn) error {
 	for name := range s.modules {
 		modules = append(modules, name)
 	}
+	timeout := s.WriteTimeout
 	s.reloadLock.RUnlock()
 
 	sort.Strings(modules)
@@ -102,7 +103,7 @@ func (s *Server) listAllModules(downConn net.Conn) error {
 		buf.WriteRune('\n')
 	}
 	buf.Write(RsyncdExit)
-	_, _ = s.writeWithTimeout(downConn, buf.Bytes())
+	_, _ = writeWithTimeout(downConn, buf.Bytes(), timeout)
 	return nil
 }
 
@@ -113,7 +114,10 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 	// nolint:staticcheck
 	defer s.bufPool.Put(buf)
 
-	n, err := s.readWithTimeout(downConn, buf)
+	writeTimeout := s.WriteTimeout
+	readTimeout := s.ReadTimeout
+
+	n, err := readLine(downConn, buf, readTimeout)
 	if err != nil {
 		return fmt.Errorf("read version from client: %w", err)
 	}
@@ -122,12 +126,12 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 		return fmt.Errorf("unknown version from client: %s", data)
 	}
 
-	_, err = s.writeWithTimeout(downConn, RsyncdVersion)
+	_, err = writeWithTimeout(downConn, RsyncdVersion, writeTimeout)
 	if err != nil {
 		return fmt.Errorf("send version to client: %w", err)
 	}
 
-	n, err = s.readWithTimeout(downConn, buf)
+	n, err = readLine(downConn, buf, readTimeout)
 	if err != nil {
 		return fmt.Errorf("read module from client: %w", err)
 	}
@@ -146,8 +150,8 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 	s.reloadLock.RUnlock()
 
 	if !ok {
-		_, _ = s.writeWithTimeout(downConn, []byte(fmt.Sprintf("unknown module: %s\n", moduleName)))
-		_, _ = s.writeWithTimeout(downConn, RsyncdExit)
+		_, _ = writeWithTimeout(downConn, []byte(fmt.Sprintf("unknown module: %s\n", moduleName)), writeTimeout)
+		_, _ = writeWithTimeout(downConn, RsyncdExit, writeTimeout)
 		return nil
 	}
 
@@ -158,12 +162,12 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 	upConn := conn.(*net.TCPConn)
 	defer upConn.Close()
 
-	_, err = s.writeWithTimeout(upConn, RsyncdVersion)
+	_, err = writeWithTimeout(upConn, RsyncdVersion, writeTimeout)
 	if err != nil {
 		return fmt.Errorf("send version to upstream: %w", err)
 	}
 
-	n, err = s.readWithTimeout(upConn, buf)
+	n, err = readLine(upConn, buf, readTimeout)
 	if err != nil {
 		return fmt.Errorf("read version from upstream: %w", err)
 	}
@@ -172,7 +176,7 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 		return fmt.Errorf("unknown version from upstream: %s", data)
 	}
 
-	_, err = s.writeWithTimeout(upConn, []byte(moduleName+"\n"))
+	_, err = writeWithTimeout(upConn, []byte(moduleName+"\n"), writeTimeout)
 	if err != nil {
 		return fmt.Errorf("send module to upstream: %w", err)
 	}
