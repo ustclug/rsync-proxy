@@ -1,6 +1,7 @@
 package server
 
 import (
+	"io"
 	"net"
 	"reflect"
 	"testing"
@@ -9,13 +10,17 @@ import (
 
 type fakeConn struct {
 	fragments [][]byte
+
+	curIdx int
 }
 
 func (c *fakeConn) Read(b []byte) (n int, err error) {
-	for _, frag := range c.fragments {
-		nw := copy(b[n:], frag)
-		n += nw
+	bound := len(c.fragments)
+	if c.curIdx >= bound {
+		return 0, io.EOF
 	}
+	n = copy(b, c.fragments[c.curIdx])
+	c.curIdx++
 	return
 }
 
