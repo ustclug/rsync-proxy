@@ -22,7 +22,6 @@ const (
 
 var (
 	RsyncdVersionPrefix = []byte("@RSYNCD:")
-	RsyncdVersion       = []byte("@RSYNCD: 31.0\n")
 	RsyncdExit          = []byte("@RSYNCD: EXIT\n")
 )
 
@@ -121,9 +120,10 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 	if err != nil {
 		return fmt.Errorf("read version from client: %w", err)
 	}
-	data := buf[:n]
-	if !bytes.HasPrefix(data, RsyncdVersionPrefix) {
-		return fmt.Errorf("unknown version from client: %s", data)
+	var RsyncdVersion = make([]byte, n)
+	copy(RsyncdVersion, buf[:n])
+	if !bytes.HasPrefix(RsyncdVersion, RsyncdVersionPrefix) {
+		return fmt.Errorf("unknown version from client: %s", RsyncdVersion)
 	}
 
 	_, err = writeWithTimeout(downConn, RsyncdVersion, writeTimeout)
@@ -138,7 +138,7 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 	if n == 0 {
 		return fmt.Errorf("empty request from client")
 	}
-	data = buf[:n]
+	data := buf[:n]
 	if len(data) == 1 { // single '\n'
 		return s.listAllModules(downConn)
 	}
