@@ -60,3 +60,24 @@ modules = ["foo1"]
 		t.Errorf("Unexpected error. Got: %s", err)
 	}
 }
+
+func TestLoadMotdInConfig(t *testing.T) {
+	s := New()
+	configContent := `
+[proxy]
+motd = "Proudly served by rsync-proxy\ntest newline"
+
+[upstreams.u1]
+host = "127.0.0.1"
+port = 1234
+modules = ["foo1", "foo2"]
+`
+	err := s.LoadConfig(strings.NewReader(configContent))
+	if err != nil {
+		t.Fatalf("Load config: %s", err)
+	}
+	expectedMotd := "Proudly served by rsync-proxy\ntest newline"
+	if !reflect.DeepEqual(expectedMotd, s.Motd) {
+		t.Errorf("Wrong motd\nExpected: %#v\nGot: %#v\n", expectedMotd, s.modules)
+	}
+}
