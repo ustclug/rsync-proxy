@@ -115,6 +115,8 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 	// nolint:staticcheck
 	defer s.bufPool.Put(buf)
 
+	ip := downConn.RemoteAddr()
+
 	writeTimeout := s.WriteTimeout
 	readTimeout := s.ReadTimeout
 
@@ -148,6 +150,7 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 		}
 	}
 	if len(data) == 1 { // single '\n'
+		log.V(3).Infof("client %s requests listing all modules", ip)
 		return s.listAllModules(downConn)
 	}
 
@@ -160,6 +163,7 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 	if !ok {
 		_, _ = writeWithTimeout(downConn, []byte(fmt.Sprintf("unknown module: %s\n", moduleName)), writeTimeout)
 		_, _ = writeWithTimeout(downConn, RsyncdExit, writeTimeout)
+		log.V(3).Infof("client %s requests an non-existing module %s", ip, moduleName)
 		return nil
 	}
 
@@ -189,7 +193,7 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 		return fmt.Errorf("send module to upstream: %w", err)
 	}
 
-	log.V(3).Infof("client %s starts requesting module %s", downConn.RemoteAddr(), moduleName)
+	log.V(3).Infof("client %s starts requesting module %s", ip, moduleName)
 
 	upClosed := make(chan struct{})
 	downClosed := make(chan struct{})
@@ -212,6 +216,8 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 		waitFor = downClosed
 	}
 	<-waitFor
+	log.V(3).Infof("client %s finishes module %s", ip, moduleName)
+
 	return nil
 }
 
