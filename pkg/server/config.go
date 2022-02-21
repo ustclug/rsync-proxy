@@ -15,8 +15,13 @@ type Upstream struct {
 	Modules []string `toml:"modules"`
 }
 
+type ProxySettings struct {
+	motd string `toml:"motd"`
+}
+
 type Config struct {
 	Upstreams map[string]*Upstream `toml:"upstreams"`
+	Proxy     ProxySettings        `toml:"proxy"`
 }
 
 func (s *Server) LoadConfig(r io.Reader) error {
@@ -30,6 +35,7 @@ func (s *Server) LoadConfig(r io.Reader) error {
 	}
 
 	s.Upstreams = c.Upstreams
+	s.Motd = c.Proxy.motd
 	return s.complete()
 }
 

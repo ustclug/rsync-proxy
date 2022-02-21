@@ -1,5 +1,8 @@
 # Example config
 
+[proxy]
+motd = "Served by rsync-proxy (https://github.com/ustclug/rsync-proxy)"
+
 [upstreams.u1]
 host = "127.0.0.1"
 port = 1234
