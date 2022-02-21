@@ -35,6 +35,8 @@ type Server struct {
 	Upstreams    map[string]*Upstream
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
+	// motd
+	Motd string
 	// ---
 
 	reloadLock sync.RWMutex
@@ -139,6 +141,12 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 		return fmt.Errorf("empty request from client")
 	}
 	data := buf[:n]
+	if s.Motd != "" {
+		_, err = writeWithTimeout(downConn, []byte(s.Motd+"\n"), writeTimeout)
+		if err != nil {
+			return fmt.Errorf("send motd to downstream: %w", err)
+		}
+	}
 	if len(data) == 1 { // single '\n'
 		return s.listAllModules(downConn)
 	}
