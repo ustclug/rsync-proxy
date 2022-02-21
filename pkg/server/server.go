@@ -22,6 +22,7 @@ const (
 
 var (
 	RsyncdVersionPrefix = []byte("@RSYNCD:")
+	RsyncdServerVersion = []byte("@RSYNCD: 31.0\n")
 	RsyncdExit          = []byte("@RSYNCD: EXIT\n")
 )
 
@@ -124,13 +125,13 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 	if err != nil {
 		return fmt.Errorf("read version from client: %w", err)
 	}
-	var RsyncdVersion = make([]byte, n)
-	copy(RsyncdVersion, buf[:n])
-	if !bytes.HasPrefix(RsyncdVersion, RsyncdVersionPrefix) {
-		return fmt.Errorf("unknown version from client: %s", RsyncdVersion)
+	var RsyncdClientVersion = make([]byte, n)
+	copy(RsyncdClientVersion, buf[:n])
+	if !bytes.HasPrefix(RsyncdClientVersion, RsyncdVersionPrefix) {
+		return fmt.Errorf("unknown version from client: %s", RsyncdClientVersion)
 	}
 
-	_, err = writeWithTimeout(downConn, RsyncdVersion, writeTimeout)
+	_, err = writeWithTimeout(downConn, RsyncdServerVersion, writeTimeout)
 	if err != nil {
 		return fmt.Errorf("send version to client: %w", err)
 	}
@@ -174,7 +175,7 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 	upConn := conn.(*net.TCPConn)
 	defer upConn.Close()
 
-	_, err = writeWithTimeout(upConn, RsyncdVersion, writeTimeout)
+	_, err = writeWithTimeout(upConn, RsyncdClientVersion, writeTimeout)
 	if err != nil {
 		return fmt.Errorf("send version to upstream: %w", err)
 	}
