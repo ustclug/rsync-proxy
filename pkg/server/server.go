@@ -189,6 +189,8 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 		return fmt.Errorf("send module to upstream: %w", err)
 	}
 
+	log.V(3).Infof("client %s starts requesting module %s", downConn.RemoteAddr(), moduleName)
+
 	upClosed := make(chan struct{})
 	downClosed := make(chan struct{})
 	go func() {
