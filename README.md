@@ -25,6 +25,10 @@ rsync-proxy 可以根据 module name 反向代理不同 host 上的 rsync daemon
 # 2. 配置
 
 ```toml
+[proxy]
+# 可选，设置访问时输出的 motd 内容（默认值为空字符串，即不输出）
+motd = "Served by rsync-proxy (https://github.com/ustclug/rsync-proxy)"
+
 # "u1" 表示 upstream 的名字，不能重复
 [upstreams.u1]
 host = "127.0.0.1"
