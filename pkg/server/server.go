@@ -196,14 +196,26 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 
 	log.V(3).Infof("client %s starts requesting module %s", ip, moduleName)
 
+	// reset read and write deadline for upConn and downConn
+	_ = upConn.SetReadDeadline(time.Time{})
+	_ = upConn.SetWriteDeadline(time.Time{})
+	_ = downConn.SetReadDeadline(time.Time{})
+	_ = downConn.SetWriteDeadline(time.Time{})
+
 	upClosed := make(chan struct{})
 	downClosed := make(chan struct{})
 	go func() {
-		_, _ = io.Copy(upConn, downConn)
+		_, gerr := io.Copy(upConn, downConn)
+		if gerr != nil {
+			log.V(3).Errorf("copy from downstream to upstream: %v", gerr)
+		}
 		close(downClosed)
 	}()
 	go func() {
-		_, _ = io.Copy(downConn, upConn)
+		_, gerr := io.Copy(downConn, upConn)
+		if gerr != nil {
+			log.V(3).Errorf("copy from upstream to downstream: %v", gerr)
+		}
 		close(upClosed)
 	}()
 	var waitFor chan struct{}
