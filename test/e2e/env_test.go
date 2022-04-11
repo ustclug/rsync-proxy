@@ -23,13 +23,16 @@ func TestMain(m *testing.M) {
 	}
 
 	code := m.Run()
+	if code != 0 {
+		e.GetRsyncProxyOutput()
+	}
 
 	e.Teardown()
 	os.Exit(code)
 }
 
 func TestRsyncProxy(t *testing.T) {
-	// run tests in order
+	// run tests in order b/c reloading config will affect some tests.
 
 	t.Run("ListModules", func(t *testing.T) {
 		outputBytes, err := exec.Command("rsync", "rsync://127.0.0.1:9527/").Output()

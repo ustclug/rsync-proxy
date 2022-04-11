@@ -51,7 +51,8 @@ func New() *Server {
 	return &Server{
 		bufPool: sync.Pool{
 			New: func() interface{} {
-				return make([]byte, TCPBufferSize)
+				buf := make([]byte, TCPBufferSize)
+				return &buf
 			},
 		},
 		dialer: net.Dialer{}, // customize keep alive interval?
@@ -112,9 +113,9 @@ func (s *Server) listAllModules(downConn net.Conn) error {
 func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 	defer downConn.Close()
 
-	buf := s.bufPool.Get().([]byte)
-	// nolint:staticcheck
-	defer s.bufPool.Put(buf)
+	bufPtr := s.bufPool.Get().(*[]byte)
+	defer s.bufPool.Put(bufPtr)
+	buf := *bufPtr
 
 	ip := downConn.RemoteAddr()
 
@@ -125,10 +126,10 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 	if err != nil {
 		return fmt.Errorf("read version from client: %w", err)
 	}
-	var RsyncdClientVersion = make([]byte, n)
-	copy(RsyncdClientVersion, buf[:n])
-	if !bytes.HasPrefix(RsyncdClientVersion, RsyncdVersionPrefix) {
-		return fmt.Errorf("unknown version from client: %s", RsyncdClientVersion)
+	rsyncdClientVersion := make([]byte, n)
+	copy(rsyncdClientVersion, buf[:n])
+	if !bytes.HasPrefix(rsyncdClientVersion, RsyncdVersionPrefix) {
+		return fmt.Errorf("unknown version from client: %s", rsyncdClientVersion)
 	}
 
 	_, err = writeWithTimeout(downConn, RsyncdServerVersion, writeTimeout)
@@ -175,7 +176,7 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 	upConn := conn.(*net.TCPConn)
 	defer upConn.Close()
 
-	_, err = writeWithTimeout(upConn, RsyncdClientVersion, writeTimeout)
+	_, err = writeWithTimeout(upConn, rsyncdClientVersion, writeTimeout)
 	if err != nil {
 		return fmt.Errorf("send version to upstream: %w", err)
 	}
@@ -197,10 +198,9 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 	log.V(3).Infof("client %s starts requesting module %s", ip, moduleName)
 
 	// reset read and write deadline for upConn and downConn
-	_ = upConn.SetReadDeadline(time.Time{})
-	_ = upConn.SetWriteDeadline(time.Time{})
-	_ = downConn.SetReadDeadline(time.Time{})
-	_ = downConn.SetWriteDeadline(time.Time{})
+	zeroTime := time.Time{}
+	_ = upConn.SetDeadline(zeroTime)
+	_ = downConn.SetDeadline(zeroTime)
 
 	upClosed := make(chan struct{})
 	downClosed := make(chan struct{})
