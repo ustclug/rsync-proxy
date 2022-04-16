@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -91,7 +90,11 @@ func New() *cobra.Command {
 			s.WriteTimeout = time.Minute
 			s.ReadTimeout = time.Minute
 
-			return s.Run(context.Background())
+			err = s.Listen()
+			if err != nil {
+				return err
+			}
+			return s.Run()
 		},
 	}
 	flags := c.Flags()
