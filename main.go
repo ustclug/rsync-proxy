@@ -7,8 +7,6 @@ import (
 
 func main() {
 	c := cmd.New()
-	err := c.Execute()
-	if err != nil {
-		log.Fatalln("Error:", err)
-	}
+	log.AddFlags(c.Flags())
+	_ = c.Execute()
 }

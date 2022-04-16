@@ -79,7 +79,6 @@ func (e *Env) Setup() error {
 	if err != nil {
 		return err
 	}
-	_ = f.Sync()
 	_ = f.Close()
 	e.configFile = f.Name()
 

@@ -100,7 +100,6 @@ func New() *cobra.Command {
 	flags.StringVar(&s.ConfigPath, "config", "/etc/rsync-proxy/config.toml", "Path to config file")
 	flags.BoolVar(&reload, "reload", false, "Inform server to reload config")
 	flags.BoolVarP(&version, "version", "V", false, "Print version and exit")
-	log.AddFlags(c.Flags())
 
 	return c
 }
