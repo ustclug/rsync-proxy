@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -26,6 +27,8 @@ var (
 	RsyncdExit          = []byte("@RSYNCD: EXIT\n")
 )
 
+const lineFeed = '\n'
+
 type Server struct {
 	// --- Options section
 	// Listen Address
@@ -38,13 +41,16 @@ type Server struct {
 	WriteTimeout time.Duration
 	// motd
 	Motd string
-	// ---
+	// --- End of options section
 
 	reloadLock sync.RWMutex
 	dialer     net.Dialer
 	bufPool    sync.Pool
 	// name -> address
 	modules map[string]string
+
+	TCPListener  net.Listener
+	HTTPListener net.Listener
 }
 
 func New() *Server {
@@ -103,7 +109,7 @@ func (s *Server) listAllModules(downConn net.Conn) error {
 	sort.Strings(modules)
 	for _, name := range modules {
 		buf.WriteString(name)
-		buf.WriteRune('\n')
+		buf.WriteRune(lineFeed)
 	}
 	buf.Write(RsyncdExit)
 	_, _ = writeWithTimeout(downConn, buf.Bytes(), timeout)
@@ -190,6 +196,15 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 		return fmt.Errorf("unknown version from upstream: %s", data)
 	}
 
+	// send back the motd
+	idx := bytes.IndexByte(data, lineFeed)
+	if idx+1 < n {
+		_, err = writeWithTimeout(downConn, data[idx+1:], writeTimeout)
+		if err != nil {
+			return fmt.Errorf("send motd to client: %w", err)
+		}
+	}
+
 	_, err = writeWithTimeout(upConn, []byte(moduleName+"\n"), writeTimeout)
 	if err != nil {
 		return fmt.Errorf("send module to upstream: %w", err)
@@ -268,40 +283,61 @@ func (s *Server) runHTTPServer() error {
 		}
 		_ = enc.Encode(&resp)
 	})
-	log.V(3).Infof("[INFO] HTTP server listening on %s", s.WebListenAddr)
-	err := http.ListenAndServe(s.WebListenAddr, &mux)
+
+	return http.Serve(s.HTTPListener, &mux)
+}
+
+func (s *Server) Listen() error {
+	l1, err := net.Listen("tcp", s.ListenAddr)
 	if err != nil {
-		return err
+		return fmt.Errorf("create tcp listener: %w", err)
 	}
+	log.V(3).Infof("[INFO] Rsync proxy listening on %s", l1.Addr())
+
+	l2, err := net.Listen("tcp", s.WebListenAddr)
+	if err != nil {
+		return fmt.Errorf("create http listener: %w", err)
+	}
+	log.V(3).Infof("[INFO] HTTP server listening on %s", l2.Addr())
+
+	s.TCPListener = l1
+	s.HTTPListener = l2
 	return nil
 }
 
-func (s *Server) Run(ctx context.Context) error {
+func (s *Server) Close() {
+	_ = s.TCPListener.Close()
+	_ = s.HTTPListener.Close()
+}
+
+func (s *Server) Run() error {
+	errCh := make(chan error)
 	go func() {
 		err := s.runHTTPServer()
 		if err != nil {
-			log.Fatalln(err)
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			errCh <- fmt.Errorf("run http server: %w", err)
 		}
 	}()
 
-	log.V(3).Infof("[INFO] Rsync proxy listening on %s", s.ListenAddr)
-	listener, err := net.Listen("tcp", s.ListenAddr)
-	if err != nil {
-		return err
-	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	for {
 		select {
-		case <-ctx.Done():
-			return nil
-
+		case err := <-errCh:
+			return err
 		default:
 		}
 
-		conn, err := listener.Accept()
+		conn, err := s.TCPListener.Accept()
 		if err != nil {
-			log.V(2).Errorf("[WARN] Accept connection: %s", err)
-			continue
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			return fmt.Errorf("accept rsync connection: %w", err)
 		}
 		go s.handleConn(ctx, conn)
 	}
