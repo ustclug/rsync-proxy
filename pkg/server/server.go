@@ -292,13 +292,15 @@ func (s *Server) Listen() error {
 	if err != nil {
 		return fmt.Errorf("create tcp listener: %w", err)
 	}
-	log.V(3).Infof("[INFO] Rsync proxy listening on %s", l1.Addr())
+	s.ListenAddr = l1.Addr().String()
+	log.V(3).Infof("[INFO] Rsync proxy listening on %s", s.ListenAddr)
 
 	l2, err := net.Listen("tcp", s.WebListenAddr)
 	if err != nil {
 		return fmt.Errorf("create http listener: %w", err)
 	}
-	log.V(3).Infof("[INFO] HTTP server listening on %s", l2.Addr())
+	s.WebListenAddr = l2.Addr().String()
+	log.V(3).Infof("[INFO] HTTP server listening on %s", s.WebListenAddr)
 
 	s.TCPListener = l1
 	s.HTTPListener = l2
