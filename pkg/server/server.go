@@ -217,34 +217,36 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 	_ = upConn.SetDeadline(zeroTime)
 	_ = downConn.SetDeadline(zeroTime)
 
-	upClosed := make(chan struct{})
-	downClosed := make(chan struct{})
+	// <dir>Bytes means bytes *read* from <dir>stream connection
+	upBytesC := make(chan int64)
+	downBytesC := make(chan int64)
 	go func() {
-		_, gerr := io.Copy(upConn, downConn)
+		n, gerr := io.Copy(upConn, downConn)
 		if gerr != nil {
 			log.V(3).Errorf("copy from downstream to upstream: %v", gerr)
 		}
-		close(downClosed)
+		downBytesC <- n
+		close(downBytesC)
 	}()
 	go func() {
-		_, gerr := io.Copy(downConn, upConn)
+		n, gerr := io.Copy(downConn, upConn)
 		if gerr != nil {
 			log.V(3).Errorf("copy from upstream to downstream: %v", gerr)
 		}
-		close(upClosed)
+		upBytesC <- n
+		close(upBytesC)
 	}()
-	var waitFor chan struct{}
+	var upBytes, downBytes int64
 	select {
-	case <-downClosed:
+	case downBytes = <-downBytesC:
 		_ = upConn.SetLinger(0)
 		_ = upConn.CloseRead()
-		waitFor = upClosed
-	case <-upClosed:
+		upBytes = <-upBytesC
+	case upBytes = <-upBytesC:
 		_ = downConn.CloseRead()
-		waitFor = downClosed
+		downBytes = <-downBytesC
 	}
-	<-waitFor
-	log.V(3).Infof("client %s finishes module %s", ip, moduleName)
+	log.V(3).Infof("client %s finishes module %s (TX: %d, RX: %d)", ip, moduleName, upBytes, downBytes)
 
 	return nil
 }
