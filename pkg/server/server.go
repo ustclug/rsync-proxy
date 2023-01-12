@@ -246,7 +246,7 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 		_ = downConn.CloseRead()
 		downBytes = <-downBytesC
 	}
-	log.V(3).Infof("client %s finishes module %s (TX: %d, RX: %d)", ip, moduleName, upBytes, downBytes)
+	log.V(3).Infof("client %s finishes module %s (sent: %d, received: %d)", ip, moduleName, upBytes, downBytes)
 
 	return nil
 }
