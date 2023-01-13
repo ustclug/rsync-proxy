@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ustclug/rsync-proxy/pkg/log"
@@ -48,6 +49,9 @@ type Server struct {
 	bufPool    sync.Pool
 	// name -> address
 	modules map[string]string
+
+	activeConnCount atomic.Int64
+	connIndex       atomic.Uint64
 
 	TCPListener  net.Listener
 	HTTPListener net.Listener
@@ -171,7 +175,7 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 	if !ok {
 		_, _ = writeWithTimeout(downConn, []byte(fmt.Sprintf("unknown module: %s\n", moduleName)), writeTimeout)
 		_, _ = writeWithTimeout(downConn, RsyncdExit, writeTimeout)
-		log.V(3).Infof("client %s requests an non-existing module %s", ip, moduleName)
+		log.V(3).Infof("client %s requests non-existing module %s", ip, moduleName)
 		return nil
 	}
 
@@ -252,6 +256,9 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 }
 
 func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
+	s.activeConnCount.Add(1)
+	defer s.activeConnCount.Add(-1)
+	_ = s.connIndex.Add(1)
 	downConn := conn.(*net.TCPConn)
 	err := s.relay(ctx, downConn)
 	if err != nil {
@@ -260,10 +267,6 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 }
 
 func (s *Server) runHTTPServer() error {
-	type Response struct {
-		Message string `json:"message"`
-	}
-
 	var mux http.ServeMux
 	mux.HandleFunc("/reload", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -271,8 +274,9 @@ func (s *Server) runHTTPServer() error {
 			return
 		}
 
-		var resp Response
-		enc := json.NewEncoder(w)
+		var resp struct {
+			Message string `json:"message"`
+		}
 
 		err := s.LoadConfigFromFile()
 		if err != nil {
@@ -283,7 +287,20 @@ func (s *Server) runHTTPServer() error {
 			w.WriteHeader(http.StatusOK)
 			resp.Message = "Successfully reloaded"
 		}
-		_ = enc.Encode(&resp)
+		json.NewEncoder(w).Encode(&resp)
+	})
+
+	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var resp struct {
+			Count int64 `json:"count"`
+		}
+		resp.Count = s.GetActiveConnectionCount()
+		json.NewEncoder(w).Encode(&resp)
 	})
 
 	return http.Serve(s.HTTPListener, &mux)
@@ -307,6 +324,10 @@ func (s *Server) Listen() error {
 	s.TCPListener = l1
 	s.HTTPListener = l2
 	return nil
+}
+
+func (s *Server) GetActiveConnectionCount() int64 {
+	return s.activeConnCount.Load()
 }
 
 func (s *Server) Close() {
