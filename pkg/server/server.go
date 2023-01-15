@@ -33,9 +33,9 @@ const lineFeed = '\n'
 type Server struct {
 	// --- Options section
 	// Listen Address
-	ListenAddr    string
-	WebListenAddr string
-	ConfigPath    string
+	ListenAddr     string
+	HTTPListenAddr string
+	ConfigPath     string
 	// name -> upstream
 	Upstreams    map[string]*Upstream
 	ReadTimeout  time.Duration
@@ -60,7 +60,7 @@ type Server struct {
 func New() *Server {
 	return &Server{
 		bufPool: sync.Pool{
-			New: func() interface{} {
+			New: func() any {
 				buf := make([]byte, TCPBufferSize)
 				return &buf
 			},
@@ -314,12 +314,12 @@ func (s *Server) Listen() error {
 	s.ListenAddr = l1.Addr().String()
 	log.V(3).Infof("[INFO] Rsync proxy listening on %s", s.ListenAddr)
 
-	l2, err := net.Listen("tcp", s.WebListenAddr)
+	l2, err := net.Listen("tcp", s.HTTPListenAddr)
 	if err != nil {
 		return fmt.Errorf("create http listener: %w", err)
 	}
-	s.WebListenAddr = l2.Addr().String()
-	log.V(3).Infof("[INFO] HTTP server listening on %s", s.WebListenAddr)
+	s.HTTPListenAddr = l2.Addr().String()
+	log.V(3).Infof("[INFO] HTTP server listening on %s", s.HTTPListenAddr)
 
 	s.TCPListener = l1
 	s.HTTPListener = l2

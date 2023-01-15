@@ -1,6 +1,8 @@
 # Example config
 
 [proxy]
+listen = "0.0.0.0:873"
+listen_http = "127.0.0.1:9528"
 motd = "Served by rsync-proxy (https://github.com/ustclug/rsync-proxy)"
 
 [upstreams.u1]

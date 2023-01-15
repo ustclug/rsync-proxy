@@ -16,7 +16,9 @@ type Upstream struct {
 }
 
 type ProxySettings struct {
-	Motd string `toml:"motd"`
+	Listen     string `toml:"listen"`
+	ListenHTTP string `toml:"listen_http"`
+	Motd       string `toml:"motd"`
 }
 
 type Config struct {
@@ -34,8 +36,10 @@ func (s *Server) LoadConfig(r io.Reader) error {
 		return err
 	}
 
-	s.Upstreams = c.Upstreams
+	s.ListenAddr = c.Proxy.Listen
+	s.HTTPListenAddr = c.Proxy.ListenHTTP
 	s.Motd = c.Proxy.Motd
+	s.Upstreams = c.Upstreams
 	return s.complete()
 }
 

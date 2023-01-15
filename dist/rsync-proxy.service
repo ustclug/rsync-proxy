@@ -6,8 +6,8 @@ Restart=on-failure
 StartLimitInterval=10s
 
 ExecStartPre=mkdir -p /var/log/rsync-proxy/
-ExecStart=/usr/local/bin/rsync-proxy -v=3 --config=/etc/rsync-proxy/config.toml --listen-addr=0.0.0.0:873 --web.listen-addr=127.0.0.1:9528
-ExecReload=/usr/local/bin/rsync-proxy --web.listen-addr=127.0.0.1:9528 --reload
+ExecStart=/usr/local/bin/rsync-proxy -v=3 --config=/etc/rsync-proxy/config.toml
+ExecReload=/usr/local/bin/rsync-proxy --config=/etc/rsync-proxy/config.toml --reload
 StandardOutput=append:/var/log/rsync-proxy/stdout.log
 StandardError=append:/var/log/rsync-proxy/stderr.log
 
