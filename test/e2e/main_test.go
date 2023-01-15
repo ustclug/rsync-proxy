@@ -92,8 +92,6 @@ func startProxy(t *testing.T, overrides ...func(*server.Server)) *server.Server 
 	log.SetOutput(&buf, &buf)
 
 	s := server.New()
-	s.ListenAddr = "127.0.0.1:0"
-	s.WebListenAddr = "127.0.0.1:0"
 	s.ConfigPath = getProxyConfigPath("config1.toml")
 	timeout := time.Minute
 	s.ReadTimeout, s.WriteTimeout = timeout, timeout
@@ -106,6 +104,8 @@ func startProxy(t *testing.T, overrides ...func(*server.Server)) *server.Server 
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
 	}
+	s.ListenAddr = "127.0.0.1:0"
+	s.HTTPListenAddr = "127.0.0.1:0"
 
 	err = s.Listen()
 	if err != nil {
