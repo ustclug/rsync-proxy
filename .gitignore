@@ -1,17 +1,4 @@
-# Ignore all
-*
-
-# Unignore all with extensions
-!*.*
-
-# Unignore all dirs
-!*/
-!Jenkinsfile
-!Dockerfile
-!Makefile
-
-### Above combination will ignore all files without extension ###
-
+build/
 .idea/
 
 *.swp
