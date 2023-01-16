@@ -30,6 +30,14 @@ var (
 
 const lineFeed = '\n'
 
+type ConnInfo struct {
+	Index       uint64    `json:"index"`
+	LocalAddr   net.Addr  `json:"local_addr"`
+	RemoteAddr  net.Addr  `json:"remote_addr"`
+	ConnectedAt time.Time `json:"connected_at"`
+	Module      string    `json:"module"`
+}
+
 type Server struct {
 	// --- Options section
 	// Listen Address
@@ -51,7 +59,7 @@ type Server struct {
 
 	activeConnCount atomic.Int64
 	connIndex       atomic.Uint64
-	connInfos       sync.Map
+	connInfo        sync.Map
 
 	TCPListener  *net.TCPListener
 	HTTPListener *net.TCPListener
@@ -123,6 +131,14 @@ func (s *Server) listAllModules(downConn net.Conn) error {
 func (s *Server) relay(ctx context.Context, index uint64, downConn *net.TCPConn) error {
 	defer downConn.Close()
 
+	info := ConnInfo{
+		Index:       index,
+		LocalAddr:   downConn.LocalAddr(),
+		RemoteAddr:  downConn.RemoteAddr(),
+		ConnectedAt: time.Now().Truncate(time.Second),
+	}
+	s.connInfo.Store(index, info)
+
 	bufPtr := s.bufPool.Get().(*[]byte)
 	defer s.bufPool.Put(bufPtr)
 	buf := *bufPtr
@@ -167,6 +183,8 @@ func (s *Server) relay(ctx context.Context, index uint64, downConn *net.TCPConn)
 	}
 
 	moduleName := string(buf[:n-1]) // trim trailing \n
+	info.Module = moduleName
+	s.connInfo.Store(index, info)
 
 	s.reloadLock.RLock()
 	upstreamAddr, ok := s.modules[moduleName]
@@ -259,6 +277,18 @@ func (s *Server) GetActiveConnectionCount() int64 {
 	return s.activeConnCount.Load()
 }
 
+func (s *Server) ListConnectionInfo() (result []ConnInfo) {
+	result = make([]ConnInfo, 0, s.GetActiveConnectionCount())
+	s.connInfo.Range(func(_, value any) bool {
+		result = append(result, value.(ConnInfo))
+		return true
+	})
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Index < result[j].Index
+	})
+	return
+}
+
 func (s *Server) runHTTPServer() error {
 	var mux http.ServeMux
 	mux.HandleFunc("/reload", func(w http.ResponseWriter, r *http.Request) {
@@ -281,6 +311,21 @@ func (s *Server) runHTTPServer() error {
 			resp.Message = "Successfully reloaded"
 		}
 		_ = json.NewEncoder(w).Encode(&resp)
+	})
+
+	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var status struct {
+			Count       int        `json:"count"`
+			Connections []ConnInfo `json:"connections"`
+		}
+		status.Connections = s.ListConnectionInfo()
+		status.Count = len(status.Connections)
+		_ = json.NewEncoder(w).Encode(&status)
 	})
 
 	mux.HandleFunc("/telegraf", func(w http.ResponseWriter, r *http.Request) {
