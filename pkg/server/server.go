@@ -32,8 +32,8 @@ const lineFeed = '\n'
 
 type ConnInfo struct {
 	Index       uint64    `json:"index"`
-	LocalAddr   net.Addr  `json:"local_addr"`
-	RemoteAddr  net.Addr  `json:"remote_addr"`
+	LocalAddr   string    `json:"local_addr"`
+	RemoteAddr  string    `json:"remote_addr"`
 	ConnectedAt time.Time `json:"connected_at"`
 	Module      string    `json:"module"`
 }
@@ -98,8 +98,12 @@ func (s *Server) loadConfig(c *Config) error {
 	}
 
 	s.reloadLock.Lock()
-	// s.ListenAddr = c.Proxy.Listen
-	// s.HTTPListenAddr = c.Proxy.ListenHTTP
+	if s.ListenAddr == "" {
+		s.ListenAddr = c.Proxy.Listen
+	}
+	if s.HTTPListenAddr == "" {
+		s.HTTPListenAddr = c.Proxy.ListenHTTP
+	}
 	s.Motd = c.Proxy.Motd
 	s.modules = modules
 	s.reloadLock.Unlock()
@@ -133,11 +137,12 @@ func (s *Server) relay(ctx context.Context, index uint64, downConn *net.TCPConn)
 
 	info := ConnInfo{
 		Index:       index,
-		LocalAddr:   downConn.LocalAddr(),
-		RemoteAddr:  downConn.RemoteAddr(),
+		LocalAddr:   downConn.LocalAddr().String(),
+		RemoteAddr:  downConn.RemoteAddr().String(),
 		ConnectedAt: time.Now().Truncate(time.Second),
 	}
 	s.connInfo.Store(index, info)
+	defer s.connInfo.Delete(index)
 
 	bufPtr := s.bufPool.Get().(*[]byte)
 	defer s.bufPool.Put(bufPtr)
