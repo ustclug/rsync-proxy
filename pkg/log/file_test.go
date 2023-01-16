@@ -49,7 +49,7 @@ func TestFileLogger(t *testing.T) {
 	l.SetFlags(0) // don't worry about prefixes
 	l.F("test test test")
 
-	os.Rename(n1, n2)
+	_ = os.Rename(n1, n2)
 	err = l.SetFile(n1)
 	if err != nil {
 		t.Fatal(err)
