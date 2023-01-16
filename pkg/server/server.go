@@ -36,8 +36,7 @@ type Server struct {
 	ListenAddr     string
 	HTTPListenAddr string
 	ConfigPath     string
-	// name -> upstream
-	Upstreams    map[string]*Upstream
+
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 	// motd
