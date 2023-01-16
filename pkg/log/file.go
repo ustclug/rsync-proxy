@@ -30,12 +30,25 @@ func NewFileLogger(filename string) (l *FileLogger, err error) {
 	return
 }
 
+func (l *FileLogger) SetFlags(flag int) {
+	l.l.SetFlags(flag)
+}
+
 func (l *FileLogger) F(format string, a ...any) {
 	l.l.Printf(format, a...)
 }
 
 func (l *FileLogger) Ln(a ...any) {
 	l.l.Println(a...)
+}
+
+func (l *FileLogger) Close() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.f != nil {
+		l.f.Close()
+		l.f = nil
+	}
 }
 
 // A mutex-free version

@@ -156,7 +156,7 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY, 0644)
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}
@@ -206,7 +206,7 @@ func writeFile(fp string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(fp, os.O_CREATE|os.O_WRONLY, 0755)
+	f, err := os.OpenFile(fp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
 	if err != nil {
 		return err
 	}

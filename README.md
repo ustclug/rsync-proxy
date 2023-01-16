@@ -14,7 +14,7 @@ cp cofig.example.toml /etc/rsync-proxy/config.toml
 vim /etc/rsync-proxy/config.toml  # 根据实际情况修改配置
 ```
 
-注意：由于技术原因，`listen`、`listen_http`、`access_log` 和 `error_log` 在重新载入配置文件时不会更新。如果需要更新这些设置，请重启进程。
+注意：由于技术原因，`listen` 和 `listen_http` 在重新载入配置文件时不会更新。如果需要更新这些设置，请重启进程。
 
 ## 创建 systemd service
 
