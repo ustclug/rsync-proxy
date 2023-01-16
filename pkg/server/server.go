@@ -89,8 +89,8 @@ func (s *Server) loadConfig(c *Config) error {
 	}
 
 	s.reloadLock.Lock()
-	s.ListenAddr = c.Proxy.Listen
-	s.HTTPListenAddr = c.Proxy.ListenHTTP
+	// s.ListenAddr = c.Proxy.Listen
+	// s.HTTPListenAddr = c.Proxy.ListenHTTP
 	s.Motd = c.Proxy.Motd
 	s.modules = modules
 	s.reloadLock.Unlock()

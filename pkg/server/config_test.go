@@ -10,18 +10,15 @@ func TestReadConfig(t *testing.T) {
 	s := New()
 	configContent := `
 [upstreams.u1]
-host = "127.0.0.1"
-port = 1234
+address = "127.0.0.1:1234"
 modules = ["foo1", "foo2"]
 
 [upstreams.u2]
-host = "127.0.0.1"
-port = 1235
+address = "127.0.0.1:1235"
 modules = ["bar1"]
 
 [upstreams.u3]
-host = "example.com"
-port = 1235
+address = "example.com:1235"
 modules = ["bar2"]
 `
 	err := s.ReadConfig(strings.NewReader(configContent))
@@ -43,20 +40,18 @@ func TestDuplicatedModulesInConfig(t *testing.T) {
 	s := New()
 	configContent := `
 [upstreams.u1]
-host = "127.0.0.1"
-port = 1234
+address = "127.0.0.1:1234"
 modules = ["foo1", "foo2"]
 
 [upstreams.u2]
-host = "127.0.0.1"
-port = 1235
+address = "127.0.0.1:1235"
 modules = ["foo1"]
 `
 	err := s.ReadConfig(strings.NewReader(configContent))
 	if err == nil {
 		t.Fatalf("Unexpected success")
 	}
-	if !strings.Contains(err.Error(), "duplicated module name") {
+	if !strings.Contains(err.Error(), "duplicate module name") {
 		t.Errorf("Unexpected error. Got: %s", err)
 	}
 }
@@ -68,8 +63,7 @@ func TestLoadMotdInConfig(t *testing.T) {
 motd = "Proudly served by rsync-proxy\ntest newline"
 
 [upstreams.u1]
-host = "127.0.0.1"
-port = 1234
+address = "127.0.0.1:1234"
 modules = ["foo1", "foo2"]
 `
 	err := s.ReadConfig(strings.NewReader(configContent))
