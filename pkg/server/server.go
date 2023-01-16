@@ -287,7 +287,7 @@ func (s *Server) runHTTPServer() error {
 			w.WriteHeader(http.StatusOK)
 			resp.Message = "Successfully reloaded"
 		}
-		json.NewEncoder(w).Encode(&resp)
+		_ = json.NewEncoder(w).Encode(&resp)
 	})
 
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
@@ -300,7 +300,7 @@ func (s *Server) runHTTPServer() error {
 			Count int64 `json:"count"`
 		}
 		resp.Count = s.GetActiveConnectionCount()
-		json.NewEncoder(w).Encode(&resp)
+		_ = json.NewEncoder(w).Encode(&resp)
 	})
 
 	return http.Serve(s.HTTPListener, &mux)
