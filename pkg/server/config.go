@@ -18,6 +18,8 @@ type ProxySettings struct {
 	Listen     string `toml:"listen"`
 	ListenHTTP string `toml:"listen_http"`
 	Motd       string `toml:"motd"`
+	AccessLog  string `toml:"access_log"`
+	ErrorLog   string `toml:"error_log"`
 }
 
 type Config struct {

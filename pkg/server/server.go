@@ -51,6 +51,8 @@ type Server struct {
 	Motd string
 	// --- End of options section
 
+	accessLog, errorLog *log.FileLogger
+
 	reloadLock sync.RWMutex
 	dialer     net.Dialer
 	bufPool    sync.Pool
@@ -61,11 +63,12 @@ type Server struct {
 	connIndex       atomic.Uint64
 	connInfo        sync.Map
 
-	TCPListener  *net.TCPListener
-	HTTPListener *net.TCPListener
+	TCPListener, HTTPListener *net.TCPListener
 }
 
 func New() *Server {
+	accessLog, _ := log.NewFileLogger("")
+	errorLog, _ := log.NewFileLogger("")
 	return &Server{
 		bufPool: sync.Pool{
 			New: func() any {
@@ -73,7 +76,9 @@ func New() *Server {
 				return &buf
 			},
 		},
-		dialer: net.Dialer{}, // customize keep alive interval?
+		dialer:    net.Dialer{}, // customize keep alive interval?
+		accessLog: accessLog,
+		errorLog:  errorLog,
 	}
 }
 
@@ -104,6 +109,8 @@ func (s *Server) loadConfig(c *Config) error {
 	if s.HTTPListenAddr == "" {
 		s.HTTPListenAddr = c.Proxy.ListenHTTP
 	}
+	s.accessLog.SetFile(c.Proxy.AccessLog)
+	s.errorLog.SetFile(c.Proxy.ErrorLog)
 	s.Motd = c.Proxy.Motd
 	s.modules = modules
 	s.reloadLock.Unlock()
@@ -183,7 +190,7 @@ func (s *Server) relay(ctx context.Context, index uint64, downConn *net.TCPConn)
 		}
 	}
 	if len(data) == 1 { // single '\n'
-		log.V(3).Infof("client %s requests listing all modules", ip)
+		s.accessLog.F("client %s requests listing all modules", ip)
 		return s.listAllModules(downConn)
 	}
 
@@ -198,7 +205,7 @@ func (s *Server) relay(ctx context.Context, index uint64, downConn *net.TCPConn)
 	if !ok {
 		_, _ = writeWithTimeout(downConn, []byte(fmt.Sprintf("unknown module: %s\n", moduleName)), writeTimeout)
 		_, _ = writeWithTimeout(downConn, RsyncdExit, writeTimeout)
-		log.V(3).Infof("client %s requests non-existing module %s", ip, moduleName)
+		s.accessLog.F("client %s requests non-existing module %s", ip, moduleName)
 		return nil
 	}
 
@@ -237,7 +244,7 @@ func (s *Server) relay(ctx context.Context, index uint64, downConn *net.TCPConn)
 		return fmt.Errorf("send module to upstream: %w", err)
 	}
 
-	log.V(3).Infof("client %s starts requesting module %s", ip, moduleName)
+	s.accessLog.F("client %s starts requesting module %s", ip, moduleName)
 
 	// reset read and write deadline for upConn and downConn
 	zeroTime := time.Time{}
@@ -248,17 +255,17 @@ func (s *Server) relay(ctx context.Context, index uint64, downConn *net.TCPConn)
 	upBytesC := make(chan int64)
 	downBytesC := make(chan int64)
 	go func() {
-		n, gerr := io.Copy(upConn, downConn)
-		if gerr != nil {
-			log.V(3).Errorf("copy from downstream to upstream: %v", gerr)
+		n, err := io.Copy(upConn, downConn)
+		if err != nil {
+			s.errorLog.F("copy from downstream to upstream: %v", err)
 		}
 		downBytesC <- n
 		close(downBytesC)
 	}()
 	go func() {
-		n, gerr := io.Copy(downConn, upConn)
-		if gerr != nil {
-			log.V(3).Errorf("copy from upstream to downstream: %v", gerr)
+		n, err := io.Copy(downConn, upConn)
+		if err != nil {
+			s.errorLog.F("copy from upstream to downstream: %v", err)
 		}
 		upBytesC <- n
 		close(upBytesC)
@@ -273,8 +280,7 @@ func (s *Server) relay(ctx context.Context, index uint64, downConn *net.TCPConn)
 		_ = downConn.CloseRead()
 		downBytes = <-downBytesC
 	}
-	log.V(3).Infof("client %s finishes module %s (sent: %d, received: %d)", ip, moduleName, upBytes, downBytes)
-
+	s.accessLog.F("client %s finishes module %s (sent: %d, received: %d)", ip, moduleName, upBytes, downBytes)
 	return nil
 }
 
@@ -314,6 +320,7 @@ func (s *Server) runHTTPServer() error {
 		err := s.ReadConfigFromFile()
 		if err != nil {
 			log.Errorf("[ERROR] Load config: %s", err)
+			s.errorLog.F("[ERROR] Load config: %s", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			resp.Message = "Failed to reload config"
 		} else {
@@ -386,7 +393,7 @@ func (s *Server) handleConn(ctx context.Context, conn *net.TCPConn) {
 
 	err := s.relay(ctx, connIndex, conn)
 	if err != nil {
-		log.V(2).Errorf("[WARN] handleConn: %s", err)
+		s.errorLog.F("[WARN] handleConn: %s", err)
 	}
 }
 
@@ -398,7 +405,7 @@ func (s *Server) Run() error {
 			if errors.Is(err, net.ErrClosed) {
 				return
 			}
-			errC <- fmt.Errorf("run http server: %w", err)
+			errC <- fmt.Errorf("start http server: %w", err)
 		}
 	}()
 

@@ -1,8 +1,11 @@
-# Example config
+# Example configuration file for rsync-proxy
 
 [proxy]
 listen = "0.0.0.0:873"
 listen_http = "127.0.0.1:9528"
+access_log = "/var/log/rsync-proxy/access.log"
+error_log = "/var/log/rsync-proxy/error.log"
+
 motd = "Served by rsync-proxy (https://github.com/ustclug/rsync-proxy)"
 
 [upstreams.u1]
