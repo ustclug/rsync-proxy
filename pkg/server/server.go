@@ -32,9 +32,9 @@ const lineFeed = '\n'
 
 type ConnInfo struct {
 	Index       uint64    `json:"index"`
-	LocalAddr   string    `json:"local_addr"`
-	RemoteAddr  string    `json:"remote_addr"`
-	ConnectedAt time.Time `json:"connected_at"`
+	LocalAddr   string    `json:"local"`
+	RemoteAddr  string    `json:"remote"`
+	ConnectedAt time.Time `json:"connected"`
 	Module      string    `json:"module"`
 }
 
@@ -155,12 +155,12 @@ func (s *Server) relay(ctx context.Context, index uint64, downConn *net.TCPConn)
 
 	n, err := readLine(downConn, buf, readTimeout)
 	if err != nil {
-		return fmt.Errorf("read version from client: %w", err)
+		return fmt.Errorf("read version from client %s: %w", ip, err)
 	}
 	rsyncdClientVersion := make([]byte, n)
 	copy(rsyncdClientVersion, buf[:n])
 	if !bytes.HasPrefix(rsyncdClientVersion, RsyncdVersionPrefix) {
-		return fmt.Errorf("unknown version from client: %s", rsyncdClientVersion)
+		return fmt.Errorf("unknown version from client %s: %q", ip, rsyncdClientVersion)
 	}
 
 	_, err = writeWithTimeout(downConn, RsyncdServerVersion, writeTimeout)
@@ -295,6 +295,11 @@ func (s *Server) ListConnectionInfo() (result []ConnInfo) {
 }
 
 func (s *Server) runHTTPServer() error {
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "(unknown)"
+	}
+
 	var mux http.ServeMux
 	mux.HandleFunc("/reload", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -341,10 +346,6 @@ func (s *Server) runHTTPServer() error {
 
 		timestamp := time.Now().Truncate(time.Second).UnixNano()
 		count := s.GetActiveConnectionCount()
-		hostname, err := os.Hostname()
-		if err != nil {
-			hostname = "(unknown)"
-		}
 		// https://docs.influxdata.com/influxdb/latest/reference/syntax/line-protocol/
 		_, _ = fmt.Fprintf(w, "rsync-proxy,host=%q count=%d %d\n", hostname, count, timestamp)
 	})
@@ -362,6 +363,7 @@ func (s *Server) Listen() error {
 
 	l2, err := net.Listen("tcp", s.HTTPListenAddr)
 	if err != nil {
+		l1.Close()
 		return fmt.Errorf("create http listener: %w", err)
 	}
 	s.HTTPListenAddr = l2.Addr().String()
