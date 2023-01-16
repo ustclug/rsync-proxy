@@ -53,8 +53,8 @@ type Server struct {
 	activeConnCount atomic.Int64
 	connIndex       atomic.Uint64
 
-	TCPListener  net.Listener
-	HTTPListener net.Listener
+	TCPListener  *net.TCPListener
+	HTTPListener *net.TCPListener
 }
 
 func New() *Server {
@@ -255,12 +255,12 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 	return nil
 }
 
-func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
+func (s *Server) handleConn(ctx context.Context, conn *net.TCPConn) {
 	s.activeConnCount.Add(1)
 	defer s.activeConnCount.Add(-1)
 	_ = s.connIndex.Add(1)
-	downConn := conn.(*net.TCPConn)
-	err := s.relay(ctx, downConn)
+
+	err := s.relay(ctx, conn)
 	if err != nil {
 		log.V(2).Errorf("[WARN] handleConn: %s", err)
 	}
@@ -324,8 +324,8 @@ func (s *Server) Listen() error {
 	s.HTTPListenAddr = l2.Addr().String()
 	log.V(3).Infof("[INFO] HTTP server listening on %s", s.HTTPListenAddr)
 
-	s.TCPListener = l1
-	s.HTTPListener = l2
+	s.TCPListener = l1.(*net.TCPListener)
+	s.HTTPListener = l2.(*net.TCPListener)
 	return nil
 }
 
@@ -339,14 +339,14 @@ func (s *Server) Close() {
 }
 
 func (s *Server) Run() error {
-	errCh := make(chan error)
+	errC := make(chan error)
 	go func() {
 		err := s.runHTTPServer()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return
 			}
-			errCh <- fmt.Errorf("run http server: %w", err)
+			errC <- fmt.Errorf("run http server: %w", err)
 		}
 	}()
 
@@ -355,12 +355,12 @@ func (s *Server) Run() error {
 
 	for {
 		select {
-		case err := <-errCh:
+		case err := <-errC:
 			return err
 		default:
 		}
 
-		conn, err := s.TCPListener.Accept()
+		conn, err := s.TCPListener.AcceptTCP()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return nil
