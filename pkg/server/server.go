@@ -51,6 +51,7 @@ type Server struct {
 
 	activeConnCount atomic.Int64
 	connIndex       atomic.Uint64
+	connInfos       sync.Map
 
 	TCPListener  *net.TCPListener
 	HTTPListener *net.TCPListener
@@ -119,7 +120,7 @@ func (s *Server) listAllModules(downConn net.Conn) error {
 	return nil
 }
 
-func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
+func (s *Server) relay(ctx context.Context, index uint64, downConn *net.TCPConn) error {
 	defer downConn.Close()
 
 	bufPtr := s.bufPool.Get().(*[]byte)
@@ -254,15 +255,8 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 	return nil
 }
 
-func (s *Server) handleConn(ctx context.Context, conn *net.TCPConn) {
-	s.activeConnCount.Add(1)
-	defer s.activeConnCount.Add(-1)
-	_ = s.connIndex.Add(1)
-
-	err := s.relay(ctx, conn)
-	if err != nil {
-		log.V(2).Errorf("[WARN] handleConn: %s", err)
-	}
+func (s *Server) GetActiveConnectionCount() int64 {
+	return s.activeConnCount.Load()
 }
 
 func (s *Server) runHTTPServer() error {
@@ -328,13 +322,20 @@ func (s *Server) Listen() error {
 	return nil
 }
 
-func (s *Server) GetActiveConnectionCount() int64 {
-	return s.activeConnCount.Load()
-}
-
 func (s *Server) Close() {
 	_ = s.TCPListener.Close()
 	_ = s.HTTPListener.Close()
+}
+
+func (s *Server) handleConn(ctx context.Context, conn *net.TCPConn) {
+	s.activeConnCount.Add(1)
+	defer s.activeConnCount.Add(-1)
+	connIndex := s.connIndex.Add(1)
+
+	err := s.relay(ctx, connIndex, conn)
+	if err != nil {
+		log.V(2).Errorf("[WARN] handleConn: %s", err)
+	}
 }
 
 func (s *Server) Run() error {
