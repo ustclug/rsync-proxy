@@ -79,7 +79,7 @@ func New() *cobra.Command {
 
 			log.SetOutput(cmd.OutOrStdout(), cmd.ErrOrStderr())
 
-			err := s.LoadConfigFromFile()
+			err := s.ReadConfigFromFile()
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}

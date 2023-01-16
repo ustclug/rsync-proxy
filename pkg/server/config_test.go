@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestLoadConfig(t *testing.T) {
+func TestReadConfig(t *testing.T) {
 	s := New()
 	configContent := `
 [upstreams.u1]
@@ -24,7 +24,7 @@ host = "example.com"
 port = 1235
 modules = ["bar2"]
 `
-	err := s.LoadConfig(strings.NewReader(configContent))
+	err := s.ReadConfig(strings.NewReader(configContent))
 	if err != nil {
 		t.Fatalf("Load config: %s", err)
 	}
@@ -52,7 +52,7 @@ host = "127.0.0.1"
 port = 1235
 modules = ["foo1"]
 `
-	err := s.LoadConfig(strings.NewReader(configContent))
+	err := s.ReadConfig(strings.NewReader(configContent))
 	if err == nil {
 		t.Fatalf("Unexpected success")
 	}
@@ -72,7 +72,7 @@ host = "127.0.0.1"
 port = 1234
 modules = ["foo1", "foo2"]
 `
-	err := s.LoadConfig(strings.NewReader(configContent))
+	err := s.ReadConfig(strings.NewReader(configContent))
 	if err != nil {
 		t.Fatalf("Load config: %s", err)
 	}

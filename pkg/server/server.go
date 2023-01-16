@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"sort"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -69,32 +68,32 @@ func New() *Server {
 	}
 }
 
-func (s *Server) complete() error {
-	if len(s.Upstreams) == 0 {
+func (s *Server) loadConfig(c *Config) error {
+	if len(c.Upstreams) == 0 {
 		return fmt.Errorf("no upstream found")
 	}
 
 	modules := map[string]string{}
-	for upstreamName, v := range s.Upstreams {
-		addr := net.JoinHostPort(v.Host, strconv.Itoa(v.Port))
+	for upstreamName, v := range c.Upstreams {
+		addr := v.Address
 		_, err := net.ResolveTCPAddr("tcp", addr)
 		if err != nil {
 			return fmt.Errorf("resolve address: %w, upstream=%s, address=%s", err, upstreamName, addr)
 		}
 		for _, moduleName := range v.Modules {
 			if _, ok := modules[moduleName]; ok {
-				return fmt.Errorf("duplicated module name: %s, upstream=%s", moduleName, upstreamName)
+				return fmt.Errorf("duplicate module name: %s, upstream=%s", moduleName, upstreamName)
 			}
 			modules[moduleName] = addr
 		}
 	}
 
 	s.reloadLock.Lock()
+	s.ListenAddr = c.Proxy.Listen
+	s.HTTPListenAddr = c.Proxy.ListenHTTP
+	s.Motd = c.Proxy.Motd
 	s.modules = modules
 	s.reloadLock.Unlock()
-
-	// .Upstreams is no longer used, reclaims the memory
-	s.Upstreams = nil
 
 	return nil
 }
@@ -278,7 +277,7 @@ func (s *Server) runHTTPServer() error {
 			Message string `json:"message"`
 		}
 
-		err := s.LoadConfigFromFile()
+		err := s.ReadConfigFromFile()
 		if err != nil {
 			log.Errorf("[ERROR] Load config: %s", err)
 			w.WriteHeader(http.StatusInternalServerError)
