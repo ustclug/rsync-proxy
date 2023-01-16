@@ -22,9 +22,6 @@ jobs:
     - name: Check out code into the Go module directory
       uses: actions/checkout@v3
 
-    - name: Install rsync
-      run: sudo apt install -y rsync
-
     - name: golangci-lint
       uses: golangci/golangci-lint-action@v3
       with:
