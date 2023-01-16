@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -289,17 +290,20 @@ func (s *Server) runHTTPServer() error {
 		_ = json.NewEncoder(w).Encode(&resp)
 	})
 
-	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/telegraf", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
 
-		var resp struct {
-			Count int64 `json:"count"`
+		timestamp := time.Now().Truncate(time.Second).UnixNano()
+		count := s.GetActiveConnectionCount()
+		hostname, err := os.Hostname()
+		if err != nil {
+			hostname = "(unknown)"
 		}
-		resp.Count = s.GetActiveConnectionCount()
-		_ = json.NewEncoder(w).Encode(&resp)
+		// https://docs.influxdata.com/influxdb/latest/reference/syntax/line-protocol/
+		_, _ = fmt.Fprintf(w, "rsync-proxy,host=%q count=%d %d\n", hostname, count, timestamp)
 	})
 
 	return http.Serve(s.HTTPListener, &mux)
