@@ -48,7 +48,10 @@ func TestFileLogger(t *testing.T) {
 	}
 	l.SetFlags(0) // don't worry about prefixes
 	l.F("test test test")
-	l.SetFile(n2)
+	err = l.SetFile(n2)
+	if err != nil {
+		t.Fatal(err)
+	}
 	l.F("vvvvvvvvvv")
 	l.Close()
 

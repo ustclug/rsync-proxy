@@ -103,18 +103,21 @@ func (s *Server) loadConfig(c *Config) error {
 	}
 
 	s.reloadLock.Lock()
+	defer s.reloadLock.Unlock()
 	if s.ListenAddr == "" {
 		s.ListenAddr = c.Proxy.Listen
 	}
 	if s.HTTPListenAddr == "" {
 		s.HTTPListenAddr = c.Proxy.ListenHTTP
 	}
-	s.accessLog.SetFile(c.Proxy.AccessLog)
-	s.errorLog.SetFile(c.Proxy.ErrorLog)
+	if err := s.accessLog.SetFile(c.Proxy.AccessLog); err != nil {
+		return err
+	}
+	if err := s.errorLog.SetFile(c.Proxy.AccessLog); err != nil {
+		return err
+	}
 	s.Motd = c.Proxy.Motd
 	s.modules = modules
-	s.reloadLock.Unlock()
-
 	return nil
 }
 
