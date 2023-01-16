@@ -41,6 +41,6 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        files: rsync-proxy-v*
+        files: build/rsync-proxy-*.tar.gz
         draft: false
         prerelease: false
