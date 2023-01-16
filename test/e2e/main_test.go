@@ -5,7 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	stdlog "log"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -14,14 +14,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ustclug/rsync-proxy/pkg/log"
 	"github.com/ustclug/rsync-proxy/pkg/server"
 )
 
 func TestMain(m *testing.M) {
 	code, err := testMain(m)
 	if err != nil {
-		stdlog.Fatal(err)
+		log.Fatal(err)
 	}
 	os.Exit(code)
 }
@@ -89,7 +88,7 @@ func getProxyConfigPath(name string) string {
 
 func startProxy(t *testing.T, overrides ...func(*server.Server)) *server.Server {
 	var buf bytes.Buffer
-	log.SetOutput(&buf, &buf)
+	log.SetOutput(&buf)
 
 	s := server.New()
 	s.ConfigPath = getProxyConfigPath("config1.toml")

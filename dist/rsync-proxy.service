@@ -5,7 +5,7 @@ Description=Rsync Proxy
 Restart=on-failure
 StartLimitInterval=10s
 
-ExecStart=/usr/local/bin/rsync-proxy -v=3 --config=/etc/rsync-proxy/config.toml
+ExecStart=/usr/local/bin/rsync-proxy --config=/etc/rsync-proxy/config.toml
 ExecReload=/usr/local/bin/rsync-proxy --config=/etc/rsync-proxy/config.toml --reload
 
 User=nobody

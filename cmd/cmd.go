@@ -4,13 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"runtime"
 	"time"
 
 	"github.com/spf13/cobra"
 
-	"github.com/ustclug/rsync-proxy/pkg/log"
 	"github.com/ustclug/rsync-proxy/pkg/server"
 )
 
@@ -77,7 +77,7 @@ func New() *cobra.Command {
 				return printVersion(cmd.OutOrStdout())
 			}
 
-			log.SetOutput(cmd.OutOrStdout(), cmd.ErrOrStderr())
+			log.SetOutput(cmd.ErrOrStderr())
 
 			err := s.ReadConfigFromFile()
 			if err != nil {

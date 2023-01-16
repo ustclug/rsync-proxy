@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -15,7 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/ustclug/rsync-proxy/pkg/log"
+	"github.com/ustclug/rsync-proxy/pkg/logging"
 )
 
 const (
@@ -51,7 +52,7 @@ type Server struct {
 	Motd string
 	// --- End of options section
 
-	accessLog, errorLog *log.FileLogger
+	accessLog, errorLog *logging.FileLogger
 
 	reloadLock sync.RWMutex
 	dialer     net.Dialer
@@ -67,8 +68,8 @@ type Server struct {
 }
 
 func New() *Server {
-	accessLog, _ := log.NewFileLogger("")
-	errorLog, _ := log.NewFileLogger("")
+	accessLog, _ := logging.NewFileLogger("")
+	errorLog, _ := logging.NewFileLogger("")
 	return &Server{
 		bufPool: sync.Pool{
 			New: func() any {
@@ -322,7 +323,7 @@ func (s *Server) runHTTPServer() error {
 
 		err := s.ReadConfigFromFile()
 		if err != nil {
-			log.Errorf("[ERROR] Load config: %s", err)
+			log.Printf("[ERROR] Load config: %s", err)
 			s.errorLog.F("[ERROR] Load config: %s", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			resp.Message = "Failed to reload config"
@@ -369,7 +370,7 @@ func (s *Server) Listen() error {
 		return fmt.Errorf("create tcp listener: %w", err)
 	}
 	s.ListenAddr = l1.Addr().String()
-	log.V(3).Infof("[INFO] Rsync proxy listening on %s", s.ListenAddr)
+	log.Printf("[INFO] Rsync proxy listening on %s", s.ListenAddr)
 
 	l2, err := net.Listen("tcp", s.HTTPListenAddr)
 	if err != nil {
@@ -377,7 +378,7 @@ func (s *Server) Listen() error {
 		return fmt.Errorf("create http listener: %w", err)
 	}
 	s.HTTPListenAddr = l2.Addr().String()
-	log.V(3).Infof("[INFO] HTTP server listening on %s", s.HTTPListenAddr)
+	log.Printf("[INFO] HTTP server listening on %s", s.HTTPListenAddr)
 
 	s.TCPListener = l1.(*net.TCPListener)
 	s.HTTPListener = l2.(*net.TCPListener)
