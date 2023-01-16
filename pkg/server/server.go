@@ -113,7 +113,7 @@ func (s *Server) loadConfig(c *Config) error {
 	if err := s.accessLog.SetFile(c.Proxy.AccessLog); err != nil {
 		return err
 	}
-	if err := s.errorLog.SetFile(c.Proxy.AccessLog); err != nil {
+	if err := s.errorLog.SetFile(c.Proxy.ErrorLog); err != nil {
 		return err
 	}
 	s.Motd = c.Proxy.Motd

@@ -13,13 +13,20 @@ type FileLogger struct {
 	f        *os.File
 	l        *log.Logger
 	mu       sync.Mutex
+
+	F  func(string, ...any)
+	Ln func(...any)
 }
 
 func NewFileLogger(filename string) (l *FileLogger, err error) {
+	logger := log.New(io.Discard, "", log.Ldate|log.Ltime|log.Lshortfile)
 	l = &FileLogger{
 		filename: filename,
 		f:        nil,
-		l:        log.New(io.Discard, "", log.Ldate|log.Ltime|log.Lshortfile),
+		l:        logger,
+
+		F:  logger.Printf,
+		Ln: logger.Println,
 	}
 
 	if filename != "" {
@@ -32,14 +39,6 @@ func NewFileLogger(filename string) (l *FileLogger, err error) {
 
 func (l *FileLogger) SetFlags(flag int) {
 	l.l.SetFlags(flag)
-}
-
-func (l *FileLogger) F(format string, a ...any) {
-	l.l.Printf(format, a...)
-}
-
-func (l *FileLogger) Ln(a ...any) {
-	l.l.Println(a...)
 }
 
 func (l *FileLogger) Close() {
