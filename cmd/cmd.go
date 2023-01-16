@@ -73,18 +73,18 @@ func New() *cobra.Command {
 	c := &cobra.Command{
 		Use: "rsync-proxy",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			switch {
-			case reload:
-				return SendReloadRequest(s.WebListenAddr, cmd.OutOrStdout(), cmd.ErrOrStderr())
-			case version:
+			if version {
 				return printVersion(cmd.OutOrStdout())
 			}
 
 			log.SetOutput(cmd.OutOrStdout(), cmd.ErrOrStderr())
 
-			err := s.LoadConfigFromFile()
+			err := s.ReadConfigFromFile()
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
+			}
+			if reload {
+				return SendReloadRequest(s.HTTPListenAddr, cmd.OutOrStdout(), cmd.ErrOrStderr())
 			}
 
 			s.WriteTimeout = time.Minute
@@ -98,9 +98,7 @@ func New() *cobra.Command {
 		},
 	}
 	flags := c.Flags()
-	flags.StringVar(&s.ListenAddr, "listen-addr", "0.0.0.0:9527", "Address to listen on for reverse proxy")
-	flags.StringVar(&s.WebListenAddr, "web.listen-addr", "127.0.0.1:9528", "Address to listen on for API")
-	flags.StringVar(&s.ConfigPath, "config", "/etc/rsync-proxy/config.toml", "Path to config file")
+	flags.StringVarP(&s.ConfigPath, "config", "c", "/etc/rsync-proxy/config.toml", "Path to config file")
 	flags.BoolVar(&reload, "reload", false, "Inform server to reload config")
 	flags.BoolVarP(&version, "version", "V", false, "Print version and exit")
 

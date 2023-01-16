@@ -20,7 +20,7 @@ func startServer(t *testing.T) *Server {
 		addr    = "127.0.0.1:0"
 		timeout = time.Second
 	)
-	srv.WebListenAddr = addr
+	srv.HTTPListenAddr = addr
 	srv.ListenAddr = addr
 	srv.ReadTimeout = timeout
 	srv.WriteTimeout = timeout

@@ -9,8 +9,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"sort"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,11 +33,10 @@ const lineFeed = '\n'
 type Server struct {
 	// --- Options section
 	// Listen Address
-	ListenAddr    string
-	WebListenAddr string
-	ConfigPath    string
-	// name -> upstream
-	Upstreams    map[string]*Upstream
+	ListenAddr     string
+	HTTPListenAddr string
+	ConfigPath     string
+
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 	// motd
@@ -53,14 +52,14 @@ type Server struct {
 	activeConnCount atomic.Int64
 	connIndex       atomic.Uint64
 
-	TCPListener  net.Listener
-	HTTPListener net.Listener
+	TCPListener  *net.TCPListener
+	HTTPListener *net.TCPListener
 }
 
 func New() *Server {
 	return &Server{
 		bufPool: sync.Pool{
-			New: func() interface{} {
+			New: func() any {
 				buf := make([]byte, TCPBufferSize)
 				return &buf
 			},
@@ -69,32 +68,32 @@ func New() *Server {
 	}
 }
 
-func (s *Server) complete() error {
-	if len(s.Upstreams) == 0 {
+func (s *Server) loadConfig(c *Config) error {
+	if len(c.Upstreams) == 0 {
 		return fmt.Errorf("no upstream found")
 	}
 
 	modules := map[string]string{}
-	for upstreamName, v := range s.Upstreams {
-		addr := net.JoinHostPort(v.Host, strconv.Itoa(v.Port))
+	for upstreamName, v := range c.Upstreams {
+		addr := v.Address
 		_, err := net.ResolveTCPAddr("tcp", addr)
 		if err != nil {
 			return fmt.Errorf("resolve address: %w, upstream=%s, address=%s", err, upstreamName, addr)
 		}
 		for _, moduleName := range v.Modules {
 			if _, ok := modules[moduleName]; ok {
-				return fmt.Errorf("duplicated module name: %s, upstream=%s", moduleName, upstreamName)
+				return fmt.Errorf("duplicate module name: %s, upstream=%s", moduleName, upstreamName)
 			}
 			modules[moduleName] = addr
 		}
 	}
 
 	s.reloadLock.Lock()
+	// s.ListenAddr = c.Proxy.Listen
+	// s.HTTPListenAddr = c.Proxy.ListenHTTP
+	s.Motd = c.Proxy.Motd
 	s.modules = modules
 	s.reloadLock.Unlock()
-
-	// .Upstreams is no longer used, reclaims the memory
-	s.Upstreams = nil
 
 	return nil
 }
@@ -255,12 +254,12 @@ func (s *Server) relay(ctx context.Context, downConn *net.TCPConn) error {
 	return nil
 }
 
-func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
+func (s *Server) handleConn(ctx context.Context, conn *net.TCPConn) {
 	s.activeConnCount.Add(1)
 	defer s.activeConnCount.Add(-1)
 	_ = s.connIndex.Add(1)
-	downConn := conn.(*net.TCPConn)
-	err := s.relay(ctx, downConn)
+
+	err := s.relay(ctx, conn)
 	if err != nil {
 		log.V(2).Errorf("[WARN] handleConn: %s", err)
 	}
@@ -278,7 +277,7 @@ func (s *Server) runHTTPServer() error {
 			Message string `json:"message"`
 		}
 
-		err := s.LoadConfigFromFile()
+		err := s.ReadConfigFromFile()
 		if err != nil {
 			log.Errorf("[ERROR] Load config: %s", err)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -290,17 +289,20 @@ func (s *Server) runHTTPServer() error {
 		_ = json.NewEncoder(w).Encode(&resp)
 	})
 
-	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/telegraf", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
 
-		var resp struct {
-			Count int64 `json:"count"`
+		timestamp := time.Now().Truncate(time.Second).UnixNano()
+		count := s.GetActiveConnectionCount()
+		hostname, err := os.Hostname()
+		if err != nil {
+			hostname = "(unknown)"
 		}
-		resp.Count = s.GetActiveConnectionCount()
-		_ = json.NewEncoder(w).Encode(&resp)
+		// https://docs.influxdata.com/influxdb/latest/reference/syntax/line-protocol/
+		_, _ = fmt.Fprintf(w, "rsync-proxy,host=%q count=%d %d\n", hostname, count, timestamp)
 	})
 
 	return http.Serve(s.HTTPListener, &mux)
@@ -314,15 +316,15 @@ func (s *Server) Listen() error {
 	s.ListenAddr = l1.Addr().String()
 	log.V(3).Infof("[INFO] Rsync proxy listening on %s", s.ListenAddr)
 
-	l2, err := net.Listen("tcp", s.WebListenAddr)
+	l2, err := net.Listen("tcp", s.HTTPListenAddr)
 	if err != nil {
 		return fmt.Errorf("create http listener: %w", err)
 	}
-	s.WebListenAddr = l2.Addr().String()
-	log.V(3).Infof("[INFO] HTTP server listening on %s", s.WebListenAddr)
+	s.HTTPListenAddr = l2.Addr().String()
+	log.V(3).Infof("[INFO] HTTP server listening on %s", s.HTTPListenAddr)
 
-	s.TCPListener = l1
-	s.HTTPListener = l2
+	s.TCPListener = l1.(*net.TCPListener)
+	s.HTTPListener = l2.(*net.TCPListener)
 	return nil
 }
 
@@ -336,14 +338,14 @@ func (s *Server) Close() {
 }
 
 func (s *Server) Run() error {
-	errCh := make(chan error)
+	errC := make(chan error)
 	go func() {
 		err := s.runHTTPServer()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return
 			}
-			errCh <- fmt.Errorf("run http server: %w", err)
+			errC <- fmt.Errorf("run http server: %w", err)
 		}
 	}()
 
@@ -352,12 +354,12 @@ func (s *Server) Run() error {
 
 	for {
 		select {
-		case err := <-errCh:
+		case err := <-errC:
 			return err
 		default:
 		}
 
-		conn, err := s.TCPListener.Accept()
+		conn, err := s.TCPListener.AcceptTCP()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return nil

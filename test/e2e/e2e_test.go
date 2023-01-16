@@ -89,7 +89,7 @@ func TestReloadConfig(t *testing.T) {
 	r.NoError(copyFile(getProxyConfigPath("config2.toml"), dst.Name()))
 
 	var reloadOutput bytes.Buffer
-	err = cmd.SendReloadRequest(proxy.WebListenAddr, &reloadOutput, &reloadOutput)
+	err = cmd.SendReloadRequest(proxy.HTTPListenAddr, &reloadOutput, &reloadOutput)
 	r.NoError(err)
 	r.Contains(reloadOutput.String(), "Successfully reloaded")
 
@@ -132,7 +132,7 @@ func TestReloadConfigWithDuplicatedModules(t *testing.T) {
 	r.NoError(copyFile(getProxyConfigPath("config3.toml"), dst.Name()))
 
 	var reloadOutput bytes.Buffer
-	err = cmd.SendReloadRequest(proxy.WebListenAddr, &reloadOutput, &reloadOutput)
+	err = cmd.SendReloadRequest(proxy.HTTPListenAddr, &reloadOutput, &reloadOutput)
 	r.Error(err)
 	r.Contains(reloadOutput.String(), "Failed to reload config")
 }

@@ -10,13 +10,14 @@ import (
 )
 
 type Upstream struct {
-	Host    string   `toml:"host"`
-	Port    int      `toml:"port"`
+	Address string   `toml:"address"`
 	Modules []string `toml:"modules"`
 }
 
 type ProxySettings struct {
-	Motd string `toml:"motd"`
+	Listen     string `toml:"listen"`
+	ListenHTTP string `toml:"listen_http"`
+	Motd       string `toml:"motd"`
 }
 
 type Config struct {
@@ -24,7 +25,7 @@ type Config struct {
 	Upstreams map[string]*Upstream `toml:"upstreams"`
 }
 
-func (s *Server) LoadConfig(r io.Reader) error {
+func (s *Server) ReadConfig(r io.Reader) error {
 	log.V(3).Infof("[INFO] loading config")
 
 	dec := toml.NewDecoder(r)
@@ -33,17 +34,14 @@ func (s *Server) LoadConfig(r io.Reader) error {
 	if err != nil {
 		return err
 	}
-
-	s.Upstreams = c.Upstreams
-	s.Motd = c.Proxy.Motd
-	return s.complete()
+	return s.loadConfig(&c)
 }
 
-func (s *Server) LoadConfigFromFile() error {
+func (s *Server) ReadConfigFromFile() error {
 	f, err := os.Open(s.ConfigPath)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	return s.LoadConfig(f)
+	return s.ReadConfig(f)
 }
