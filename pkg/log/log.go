@@ -54,3 +54,12 @@ func Fatalln(a ...interface{}) {
 func Errorf(format string, a ...interface{}) {
 	stderr.Printf(format, a...)
 }
+
+func init() {
+	// Don't repeat timestamp if logging to systemd journal
+	_, ok := os.LookupEnv("JOURNAL_STREAM")
+	if ok {
+		stdout.SetFlags(stdout.Flags() &^ (log.Ldate | log.Ltime))
+		stderr.SetFlags(stderr.Flags() &^ (log.Ldate | log.Ltime))
+	}
+}
