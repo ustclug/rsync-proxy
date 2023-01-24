@@ -23,3 +23,23 @@ cp rsync-proxy.service /etc/systemd/system/
 cp rsync-proxy /usr/local/bin/
 systemctl enable --now rsync-proxy.service
 ```
+
+## 使用 logrotate 滚动日志
+
+```
+/var/log/rsync-proxy/*.log
+{
+    create 0644 nobody nogroup
+    daily
+    size 100M
+    rotate 200
+    dateext
+    compress
+    notifempty
+    missingok
+
+    postrotate
+        systemctl reload rsync-proxy.service
+    endscript
+}
+```
