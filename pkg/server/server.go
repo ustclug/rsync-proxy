@@ -159,7 +159,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn *net.TCPConn)
 	defer s.bufPool.Put(bufPtr)
 	buf := *bufPtr
 
-	ip := downConn.RemoteAddr()
+	ip := downConn.RemoteAddr().String()
 
 	writeTimeout := s.WriteTimeout
 	readTimeout := s.ReadTimeout
@@ -176,21 +176,21 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn *net.TCPConn)
 
 	_, err = writeWithTimeout(downConn, RsyncdServerVersion, writeTimeout)
 	if err != nil {
-		return fmt.Errorf("send version to client: %w", err)
+		return fmt.Errorf("send version to client %s: %w", ip, err)
 	}
 
 	n, err = readLine(downConn, buf, readTimeout)
 	if err != nil {
-		return fmt.Errorf("read module from client: %w", err)
+		return fmt.Errorf("read module from client %s: %w", ip, err)
 	}
 	if n == 0 {
-		return fmt.Errorf("empty request from client")
+		return fmt.Errorf("empty request from client %s", ip)
 	}
 	data := buf[:n]
 	if s.Motd != "" {
 		_, err = writeWithTimeout(downConn, []byte(s.Motd+"\n"), writeTimeout)
 		if err != nil {
-			return fmt.Errorf("send motd to downstream: %w", err)
+			return fmt.Errorf("send motd to client %s: %w", ip, err)
 		}
 	}
 	if len(data) == 1 { // single '\n'
@@ -219,19 +219,20 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn *net.TCPConn)
 	}
 	upConn := conn.(*net.TCPConn)
 	defer upConn.Close()
+	upIp := upConn.RemoteAddr().(*net.TCPAddr).IP.String()
 
 	_, err = writeWithTimeout(upConn, rsyncdClientVersion, writeTimeout)
 	if err != nil {
-		return fmt.Errorf("send version to upstream: %w", err)
+		return fmt.Errorf("send version to upstream %s: %w", upIp, err)
 	}
 
 	n, err = readLine(upConn, buf, readTimeout)
 	if err != nil {
-		return fmt.Errorf("read version from upstream: %w", err)
+		return fmt.Errorf("read version from upstream %s: %w", upIp, err)
 	}
 	data = buf[:n]
 	if !bytes.HasPrefix(data, RsyncdVersionPrefix) {
-		return fmt.Errorf("unknown version from upstream: %s", data)
+		return fmt.Errorf("unknown version from upstream %s: %s", upIp, data)
 	}
 
 	// send back the motd
@@ -239,13 +240,13 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn *net.TCPConn)
 	if idx+1 < n {
 		_, err = writeWithTimeout(downConn, data[idx+1:], writeTimeout)
 		if err != nil {
-			return fmt.Errorf("send motd to client: %w", err)
+			return fmt.Errorf("send motd to client %s: %w", ip, err)
 		}
 	}
 
 	_, err = writeWithTimeout(upConn, []byte(moduleName+"\n"), writeTimeout)
 	if err != nil {
-		return fmt.Errorf("send module to upstream: %w", err)
+		return fmt.Errorf("send module to upstream %s: %w", upIp, err)
 	}
 
 	s.accessLog.F("client %s starts requesting module %s", ip, moduleName)
@@ -397,7 +398,7 @@ func (s *Server) handleConn(ctx context.Context, conn *net.TCPConn) {
 
 	err := s.relay(ctx, connIndex, conn)
 	if err != nil {
-		s.errorLog.F("[WARN] handleConn: %s", err)
+		s.errorLog.F("handleConn: %s", err)
 	}
 }
 
