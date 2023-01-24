@@ -32,7 +32,7 @@ var (
 const lineFeed = '\n'
 
 type ConnInfo struct {
-	Index       uint64    `json:"index"`
+	Index       uint32    `json:"index"`
 	LocalAddr   string    `json:"local"`
 	RemoteAddr  string    `json:"remote"`
 	ConnectedAt time.Time `json:"connected"`
@@ -61,7 +61,7 @@ type Server struct {
 	modules map[string]string
 
 	activeConnCount atomic.Int64
-	connIndex       atomic.Uint64
+	connIndex       atomic.Uint32
 	connInfo        sync.Map
 
 	TCPListener, HTTPListener *net.TCPListener
@@ -143,7 +143,7 @@ func (s *Server) listAllModules(downConn net.Conn) error {
 	return nil
 }
 
-func (s *Server) relay(ctx context.Context, index uint64, downConn *net.TCPConn) error {
+func (s *Server) relay(ctx context.Context, index uint32, downConn *net.TCPConn) error {
 	defer downConn.Close()
 
 	info := ConnInfo{
@@ -255,36 +255,36 @@ func (s *Server) relay(ctx context.Context, index uint64, downConn *net.TCPConn)
 	_ = upConn.SetDeadline(zeroTime)
 	_ = downConn.SetDeadline(zeroTime)
 
-	// <dir>Bytes means bytes *read* from <dir>stream connection
-	upBytesC := make(chan int64)
-	downBytesC := make(chan int64)
+	// <sent> and <received> are with the client, not upstream
+	sentBytesC := make(chan int64)
+	receivedBytesC := make(chan int64)
 	go func() {
 		n, err := io.Copy(upConn, downConn)
 		if err != nil {
 			s.errorLog.F("copy from downstream to upstream: %v", err)
 		}
-		downBytesC <- n
-		close(downBytesC)
+		receivedBytesC <- n
+		close(receivedBytesC)
 	}()
 	go func() {
 		n, err := io.Copy(downConn, upConn)
 		if err != nil {
 			s.errorLog.F("copy from upstream to downstream: %v", err)
 		}
-		upBytesC <- n
-		close(upBytesC)
+		sentBytesC <- n
+		close(sentBytesC)
 	}()
-	var upBytes, downBytes int64
+	var sentBytes, receivedBytes int64
 	select {
-	case downBytes = <-downBytesC:
+	case receivedBytes = <-receivedBytesC:
 		_ = upConn.SetLinger(0)
 		_ = upConn.CloseRead()
-		upBytes = <-upBytesC
-	case upBytes = <-upBytesC:
+		sentBytes = <-sentBytesC
+	case sentBytes = <-sentBytesC:
 		_ = downConn.CloseRead()
-		downBytes = <-downBytesC
+		receivedBytes = <-receivedBytesC
 	}
-	s.accessLog.F("client %s finishes module %s (sent: %d, received: %d)", ip, moduleName, upBytes, downBytes)
+	s.accessLog.F("client %s finishes module %s (sent: %d, received: %d)", ip, moduleName, sentBytes, receivedBytes)
 	return nil
 }
 
