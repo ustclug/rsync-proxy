@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -59,6 +61,8 @@ type Server struct {
 	bufPool    sync.Pool
 	// name -> address
 	modules map[string]string
+	// address -> enable proxy protocol or not
+	proxyProtocol map[string]bool
 
 	activeConnCount atomic.Int64
 	connIndex       atomic.Uint32
@@ -89,6 +93,7 @@ func (s *Server) loadConfig(c *Config) error {
 	}
 
 	modules := map[string]string{}
+	proxyProtocol := map[string]bool{}
 	for upstreamName, v := range c.Upstreams {
 		addr := v.Address
 		_, err := net.ResolveTCPAddr("tcp", addr)
@@ -101,6 +106,7 @@ func (s *Server) loadConfig(c *Config) error {
 			}
 			modules[moduleName] = addr
 		}
+		proxyProtocol[addr] = v.UseProxyProtocol
 	}
 
 	s.reloadLock.Lock()
@@ -119,6 +125,7 @@ func (s *Server) loadConfig(c *Config) error {
 	}
 	s.Motd = c.Proxy.Motd
 	s.modules = modules
+	s.proxyProtocol = proxyProtocol
 	return nil
 }
 
@@ -159,42 +166,44 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn *net.TCPConn)
 	defer s.bufPool.Put(bufPtr)
 	buf := *bufPtr
 
-	ip := downConn.RemoteAddr().String()
+	addr := downConn.RemoteAddr().String()
+	ip := downConn.RemoteAddr().(*net.TCPAddr).IP.String()
+	port := downConn.RemoteAddr().(*net.TCPAddr).Port
 
 	writeTimeout := s.WriteTimeout
 	readTimeout := s.ReadTimeout
 
 	n, err := readLine(downConn, buf, readTimeout)
 	if err != nil {
-		return fmt.Errorf("read version from client %s: %w", ip, err)
+		return fmt.Errorf("read version from client %s: %w", addr, err)
 	}
 	rsyncdClientVersion := make([]byte, n)
 	copy(rsyncdClientVersion, buf[:n])
 	if !bytes.HasPrefix(rsyncdClientVersion, RsyncdVersionPrefix) {
-		return fmt.Errorf("unknown version from client %s: %q", ip, rsyncdClientVersion)
+		return fmt.Errorf("unknown version from client %s: %q", addr, rsyncdClientVersion)
 	}
 
 	_, err = writeWithTimeout(downConn, RsyncdServerVersion, writeTimeout)
 	if err != nil {
-		return fmt.Errorf("send version to client %s: %w", ip, err)
+		return fmt.Errorf("send version to client %s: %w", addr, err)
 	}
 
 	n, err = readLine(downConn, buf, readTimeout)
 	if err != nil {
-		return fmt.Errorf("read module from client %s: %w", ip, err)
+		return fmt.Errorf("read module from client %s: %w", addr, err)
 	}
 	if n == 0 {
-		return fmt.Errorf("empty request from client %s", ip)
+		return fmt.Errorf("empty request from client %s", addr)
 	}
 	data := buf[:n]
 	if s.Motd != "" {
 		_, err = writeWithTimeout(downConn, []byte(s.Motd+"\n"), writeTimeout)
 		if err != nil {
-			return fmt.Errorf("send motd to client %s: %w", ip, err)
+			return fmt.Errorf("send motd to client %s: %w", addr, err)
 		}
 	}
 	if len(data) == 1 { // single '\n'
-		s.accessLog.F("client %s requests listing all modules", ip)
+		s.accessLog.F("client %s requests listing all modules", addr)
 		return s.listAllModules(downConn)
 	}
 
@@ -204,6 +213,10 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn *net.TCPConn)
 
 	s.reloadLock.RLock()
 	upstreamAddr, ok := s.modules[moduleName]
+	var useProxyProtocol bool
+	if ok {
+		useProxyProtocol = s.proxyProtocol[upstreamAddr]
+	}
 	s.reloadLock.RUnlock()
 
 	if !ok {
@@ -220,6 +233,23 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn *net.TCPConn)
 	upConn := conn.(*net.TCPConn)
 	defer upConn.Close()
 	upIp := upConn.RemoteAddr().(*net.TCPAddr).IP.String()
+	upPort := upConn.RemoteAddr().(*net.TCPAddr).Port
+
+	if useProxyProtocol {
+		var proxyHeader string
+		proxyHeader += "PROXY TCP"
+		if strings.Contains(ip, ":") {
+			// IPv6
+			proxyHeader += "6 "
+		} else {
+			proxyHeader += "4 "
+		}
+		proxyHeader += ip + " " + upIp + " " + strconv.Itoa(port) + " " + strconv.Itoa(upPort) + "\r\n"
+		_, err = writeWithTimeout(upConn, []byte(proxyHeader), writeTimeout)
+		if err != nil {
+			return fmt.Errorf("send proxy protocol header to upstream %s: %w", upIp, err)
+		}
+	}
 
 	_, err = writeWithTimeout(upConn, rsyncdClientVersion, writeTimeout)
 	if err != nil {

@@ -1,0 +1,8 @@
+[upstreams.u1]
+address = "127.0.0.1:1236"
+modules = ["pro"]
+use_proxy_protocol = true
+
+[upstreams.u2]
+address = "127.0.0.1:1235"
+modules = ["bar", "baz"]
