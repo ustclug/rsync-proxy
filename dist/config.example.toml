@@ -19,3 +19,10 @@ modules = ["bar"]
 [upstreams.u3]
 address = "rsync.example.internal:1235"
 modules = ["baz"]
+
+[upstreams.u4]
+address = "rsync.example.internal:1236"
+modules = ["pro"]
+# This option requires rsync upstream to support and enable proxy protocol
+# See: https://github.com/WayneD/rsync/blob/2f9b963abaa52e44891180fe6c0d1c2219f6686d/rsyncd.conf.5.md?plain=1#L268
+use_proxy_protocol = true

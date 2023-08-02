@@ -10,7 +10,7 @@ rsync-proxy 可以根据 module name 反向代理不同 host 上的 rsync daemon
 
 ```shell
 mkdir /etc/rsync-proxy
-cp cofig.example.toml /etc/rsync-proxy/config.toml
+cp config.example.toml /etc/rsync-proxy/config.toml
 vim /etc/rsync-proxy/config.toml  # 根据实际情况修改配置
 ```
 
