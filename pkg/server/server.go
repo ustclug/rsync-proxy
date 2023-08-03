@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -236,15 +235,13 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn *net.TCPConn)
 	upPort := upConn.RemoteAddr().(*net.TCPAddr).Port
 
 	if useProxyProtocol {
-		var proxyHeader string
-		proxyHeader += "PROXY TCP"
+		var IPVersion string
 		if strings.Contains(ip, ":") {
-			// IPv6
-			proxyHeader += "6 "
+			IPVersion = "TCP6"
 		} else {
-			proxyHeader += "4 "
+			IPVersion = "TCP4"
 		}
-		proxyHeader += ip + " " + upIp + " " + strconv.Itoa(port) + " " + strconv.Itoa(upPort) + "\r\n"
+		proxyHeader := fmt.Sprintf("PROXY %s %s %s %d %d\r\n", IPVersion, ip, upIp, port, upPort)
 		_, err = writeWithTimeout(upConn, []byte(proxyHeader), writeTimeout)
 		if err != nil {
 			return fmt.Errorf("send proxy protocol header to upstream %s: %w", upIp, err)
