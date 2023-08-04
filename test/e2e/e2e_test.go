@@ -136,3 +136,31 @@ func TestReloadConfigWithDuplicatedModules(t *testing.T) {
 	r.Error(err)
 	r.Contains(reloadOutput.String(), "Failed to reload config")
 }
+
+func TestProxyProtocol(t *testing.T) {
+	r := require.New(t)
+	dst, err := os.CreateTemp("", "rsync-proxy-e2e-*")
+	r.NoError(err)
+	r.NoError(dst.Close())
+
+	r.NoError(copyFile(getProxyConfigPath("config4.toml"), dst.Name()))
+
+	proxy := startProxy(t, func(s *server.Server) {
+		s.ConfigPath = dst.Name()
+	})
+
+	tmpFile, err := os.CreateTemp("", "rsync-proxy-e2e-*")
+	r.NoError(err)
+	r.NoError(tmpFile.Close())
+	defer os.Remove(tmpFile.Name())
+
+	outputBytes, err := newRsyncCommand(getRsyncPath(proxy, "/pro/v3.5/data"), tmpFile.Name()).CombinedOutput()
+	if err != nil {
+		t.Log(string(outputBytes))
+		r.NoError(err)
+	}
+
+	got, err := os.ReadFile(tmpFile.Name())
+	r.NoError(err)
+	r.Equal("3.5", string(got))
+}

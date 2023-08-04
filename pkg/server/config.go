@@ -9,8 +9,9 @@ import (
 )
 
 type Upstream struct {
-	Address string   `toml:"address"`
-	Modules []string `toml:"modules"`
+	Address          string   `toml:"address"`
+	Modules          []string `toml:"modules"`
+	UseProxyProtocol bool     `toml:"use_proxy_protocol"`
 }
 
 type ProxySettings struct {

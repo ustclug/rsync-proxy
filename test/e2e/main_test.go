@@ -54,6 +54,10 @@ func testMain(m *testing.M) (int, error) {
 			port: 1235,
 			name: "bar.conf",
 		},
+		{
+			port: 1236,
+			name: "proxyprotocol.conf",
+		},
 	} {
 		prog, err := runRsyncd(ctx, cfg.port, filepath.Join(rsyncdConfDir, cfg.name))
 		if err != nil {
@@ -222,6 +226,8 @@ func setupDataDirs() error {
 		"/tmp/rsync-proxy-e2e/bar/v3.2/data":  []byte("3.2"),
 		"/tmp/rsync-proxy-e2e/bar/v3.3/data":  []byte("3.3"),
 		"/tmp/rsync-proxy-e2e/baz/v3.4/data":  []byte("3.4"),
+		"/tmp/rsync-proxy-e2e/pro/v3.5/data":  []byte("3.5"),
+		"/tmp/rsync-proxy-e2e/pro/v3.6/data":  []byte("3.6"),
 	}
 	for fp, data := range files {
 		err := writeFile(fp, data)
