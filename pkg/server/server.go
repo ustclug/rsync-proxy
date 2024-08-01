@@ -386,7 +386,7 @@ func (s *Server) runHTTPServer() error {
 		timestamp := time.Now().Truncate(time.Second).UnixNano()
 		count := s.GetActiveConnectionCount()
 		// https://docs.influxdata.com/influxdb/latest/reference/syntax/line-protocol/
-		_, _ = fmt.Fprintf(w, "rsync-proxy,host=%q count=%d %d\n", hostname, count, timestamp)
+		_, _ = fmt.Fprintf(w, "rsync-proxy,host=%s count=%d %d\n", hostname, count, timestamp)
 	})
 
 	return http.Serve(s.HTTPListener, &mux)
