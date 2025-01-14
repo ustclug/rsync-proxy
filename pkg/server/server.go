@@ -26,7 +26,9 @@ const (
 
 var (
 	RsyncdVersionPrefix = []byte("@RSYNCD:")
-	RsyncdServerVersion = []byte("@RSYNCD: 31.0\n")
+	// Daemon auth list is a must in server version since 32.0
+	// See https://github.com/RsyncProject/rsync/blob/a6312e60c95e5ebb5764eaf18eb07be23420ebc6/clientserver.c#L203
+	RsyncdServerVersion = []byte("@RSYNCD: 32.0 sha512 sha256 sha1 md5 md4\n")
 	RsyncdExit          = []byte("@RSYNCD: EXIT\n")
 )
 
