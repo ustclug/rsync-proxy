@@ -314,7 +314,8 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn *net.TCPConn)
 		_ = downConn.CloseRead()
 		receivedBytes = <-receivedBytesC
 	}
-	s.accessLog.F("client %s finishes module %s (sent: %d, received: %d)", ip, moduleName, sentBytes, receivedBytes)
+	duration := time.Since(info.ConnectedAt)
+	s.accessLog.F("client %s finishes module %s (sent: %d, received: %d, duration: %s)", ip, moduleName, sentBytes, receivedBytes, duration)
 	return nil
 }
 
