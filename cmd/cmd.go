@@ -41,6 +41,53 @@ func SendReloadRequest(addr string, stdout, stderr io.Writer) error {
 	return err
 }
 
+func SendConnectionsRequest(addr string, stdout, stderr io.Writer) error {
+	resp, err := http.Get(fmt.Sprintf("http://%s/status", addr))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(stderr, resp.Body)
+		return fmt.Errorf("failed to get connections")
+	}
+
+	var result struct {
+		Connections []struct {
+			Index         int       `json:"index"`
+			RemoteAddr    string    `json:"remote_addr"`
+			Module        string    `json:"module"`
+			ConnectedAt   time.Time `json:"connected_at"`
+			ReceivedBytes int64     `json:"received_bytes"`
+			SentBytes     int64     `json:"sent_bytes"`
+		} `json:"connections"`
+		Count int `json:"count"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if result.Count == 0 {
+		_, _ = fmt.Fprintln(stdout, "No active connections")
+		return nil
+	}
+
+	_, _ = fmt.Fprintln(stdout, "=== Active Connections ===")
+	for _, conn := range result.Connections {
+		_, _ = fmt.Fprintf(stdout, "Index: %d, IP: %s, Module: %s, Connected: %s, Recv: %d bytes, Send: %d bytes\n",
+			conn.Index,
+			conn.RemoteAddr,
+			conn.Module,
+			conn.ConnectedAt.Format("2006-01-02 15:04:05"),
+			conn.ReceivedBytes,
+			conn.SentBytes)
+	}
+	_, _ = fmt.Fprintln(stdout, "==========================")
+	return nil
+}
+
 func printVersion(stdout io.Writer) error {
 	type Info struct {
 		GitCommit string
@@ -64,8 +111,9 @@ func printVersion(stdout io.Writer) error {
 
 func New() *cobra.Command {
 	var (
-		reload  bool
-		version bool
+		reload      bool
+		version     bool
+		connections bool
 	)
 
 	s := server.New()
@@ -86,6 +134,9 @@ func New() *cobra.Command {
 			if reload {
 				return SendReloadRequest(s.HTTPListenAddr, cmd.OutOrStdout(), cmd.ErrOrStderr())
 			}
+			if connections {
+				return SendConnectionsRequest(s.HTTPListenAddr, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			}
 
 			s.WriteTimeout = time.Minute
 			s.ReadTimeout = time.Minute
@@ -101,6 +152,7 @@ func New() *cobra.Command {
 	flags.StringVarP(&s.ConfigPath, "config", "c", "/etc/rsync-proxy/config.toml", "Path to config file")
 	flags.BoolVar(&reload, "reload", false, "Inform server to reload config")
 	flags.BoolVarP(&version, "version", "V", false, "Print version and exit")
+	flags.BoolVar(&connections, "connections", false, "Show active connections")
 
 	return c
 }
