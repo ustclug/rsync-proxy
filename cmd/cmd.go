@@ -56,35 +56,91 @@ func SendConnectionsRequest(addr string, stdout, stderr io.Writer) error {
 	var result struct {
 		Connections []struct {
 			Index         int       `json:"index"`
-			RemoteAddr    string    `json:"remote_addr"`
+			RemoteAddr    string    `json:"remote"`
 			Module        string    `json:"module"`
-			ConnectedAt   time.Time `json:"connected_at"`
+			ConnectedAt   time.Time `json:"connected"`
 			ReceivedBytes int64     `json:"received_bytes"`
 			SentBytes     int64     `json:"sent_bytes"`
+			UpstreamAddr  string    `json:"upstream"`
+			IsWaiting     bool      `json:"is_waiting"`
+			QueuePos      int       `json:"queue_pos"`
 		} `json:"connections"`
-		Count int `json:"count"`
+		Count  int `json:"count"`
+		Queues map[string]struct {
+			Active  int `json:"active"`
+			Max     int `json:"max"`
+			Waiting int `json:"waiting"`
+		} `json:"queues"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	if result.Count == 0 {
-		_, _ = fmt.Fprintln(stdout, "No active connections")
-		return nil
+	// Separate active and waiting connections
+	var activeConns, waitingConns []struct {
+		Index         int       `json:"index"`
+		RemoteAddr    string    `json:"remote"`
+		Module        string    `json:"module"`
+		ConnectedAt   time.Time `json:"connected"`
+		ReceivedBytes int64     `json:"received_bytes"`
+		SentBytes     int64     `json:"sent_bytes"`
+		UpstreamAddr  string    `json:"upstream"`
+		IsWaiting     bool      `json:"is_waiting"`
+		QueuePos      int       `json:"queue_pos"`
 	}
 
-	_, _ = fmt.Fprintln(stdout, "=== Active Connections ===")
 	for _, conn := range result.Connections {
-		_, _ = fmt.Fprintf(stdout, "Index: %d, IP: %s, Module: %s, Connected: %s, Recv: %d bytes, Send: %d bytes\n",
-			conn.Index,
-			conn.RemoteAddr,
-			conn.Module,
-			conn.ConnectedAt.Format("2006-01-02 15:04:05"),
-			conn.ReceivedBytes,
-			conn.SentBytes)
+		if conn.IsWaiting {
+			waitingConns = append(waitingConns, conn)
+		} else {
+			activeConns = append(activeConns, conn)
+		}
 	}
-	_, _ = fmt.Fprintln(stdout, "==========================")
+
+	// Display active connections
+	if len(activeConns) == 0 {
+		_, _ = fmt.Fprintln(stdout, "No active connections")
+	} else {
+		_, _ = fmt.Fprintln(stdout, "=== Active Connections ===")
+		for _, conn := range activeConns {
+			_, _ = fmt.Fprintf(stdout, "Index: %d, IP: %s, Module: %s, Upstream: %s, Connected: %s, Recv: %d bytes, Send: %d bytes\n",
+				conn.Index,
+				conn.RemoteAddr,
+				conn.Module,
+				conn.UpstreamAddr,
+				conn.ConnectedAt.Format("2006-01-02 15:04:05"),
+				conn.ReceivedBytes,
+				conn.SentBytes)
+		}
+	}
+
+	// Display waiting connections
+	if len(waitingConns) > 0 {
+		_, _ = fmt.Fprintln(stdout, "\n=== Waiting in Queue ===")
+		for _, conn := range waitingConns {
+			_, _ = fmt.Fprintf(stdout, "Index: %d, IP: %s, Module: %s, Upstream: %s, Queue Position: %d\n",
+				conn.Index,
+				conn.RemoteAddr,
+				conn.Module,
+				conn.UpstreamAddr,
+				conn.QueuePos)
+		}
+	}
+
+	// Display queue status
+	if len(result.Queues) > 0 {
+		_, _ = fmt.Fprintln(stdout, "\n=== Queue Status ===")
+		for addr, queue := range result.Queues {
+			if queue.Max > 0 {
+				_, _ = fmt.Fprintf(stdout, "%s: %d/%d active, %d waiting\n", addr, queue.Active, queue.Max, queue.Waiting)
+			} else {
+				_, _ = fmt.Fprintf(stdout, "%s: %d/unlimited active, %d waiting\n", addr, queue.Active, queue.Waiting)
+			}
+		}
+	}
+
+	_, _ = fmt.Fprintln(stdout, "\n==========================")
 	return nil
 }
 

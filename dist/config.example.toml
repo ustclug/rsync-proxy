@@ -10,6 +10,7 @@ motd = "Served by rsync-proxy (https://github.com/ustclug/rsync-proxy)"
 
 [upstreams.u1]
 address = "127.0.0.1:1234"
+max_connections = 10  # Maximum concurrent connections for this upstream (0 = unlimited)
 modules = ["foo"]
 
 [upstreams.u2]

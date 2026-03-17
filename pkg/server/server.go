@@ -42,6 +42,9 @@ type ConnInfo struct {
 	Module        string    `json:"module"`
 	SentBytes     atomic.Int64
 	ReceivedBytes atomic.Int64
+	UpstreamAddr  string `json:"upstream"`
+	IsWaiting     bool   `json:"is_waiting"`
+	QueuePos      int    `json:"queue_pos"`
 }
 
 type Server struct {
@@ -71,6 +74,8 @@ type Server struct {
 	connIndex       atomic.Uint32
 	connInfo        sync.Map
 
+	queueManager *QueueManager
+
 	TCPListener, HTTPListener *net.TCPListener
 }
 
@@ -90,7 +95,7 @@ func (cr *countingReader) Read(p []byte) (n int, err error) {
 func New() *Server {
 	accessLog, _ := logging.NewFileLogger("")
 	errorLog, _ := logging.NewFileLogger("")
-	return &Server{
+	s := &Server{
 		bufPool: sync.Pool{
 			New: func() any {
 				buf := make([]byte, TCPBufferSize)
@@ -101,6 +106,8 @@ func New() *Server {
 		accessLog: accessLog,
 		errorLog:  errorLog,
 	}
+	s.queueManager = NewQueueManager()
+	return s
 }
 
 func (s *Server) loadConfig(c *Config) error {
@@ -142,6 +149,25 @@ func (s *Server) loadConfig(c *Config) error {
 	s.Motd = c.Proxy.Motd
 	s.modules = modules
 	s.proxyProtocol = proxyProtocol
+
+	// Collect current upstream addresses to track changes
+	currentAddrs := make(map[string]struct{})
+	for _, v := range c.Upstreams {
+		currentAddrs[v.Address] = struct{}{}
+	}
+
+	// Unregister upstreams that are no longer in config
+	for _, addr := range s.queueManager.ListAddresses() {
+		if _, ok := currentAddrs[addr]; !ok {
+			s.queueManager.UnregisterUpstream(addr)
+		}
+	}
+
+	// Register all upstreams with queue manager
+	for _, v := range c.Upstreams {
+		s.queueManager.RegisterUpstream(v.Address, v.MaxConnections)
+	}
+
 	return nil
 }
 
@@ -316,7 +342,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn *net.TCPConn)
 		close(sentClosed)
 	}()
 	go func() {
-		_, err := io.Copy(downConn, upReader)
+		_, err = io.Copy(downConn, upReader)
 		if err != nil {
 			s.errorLog.F("copy from upstream to downstream: %v", err)
 		}
@@ -393,9 +419,11 @@ func (s *Server) runHTTPServer() error {
 		var status struct {
 			Count       int         `json:"count"`
 			Connections []*ConnInfo `json:"connections"`
+			Queues      interface{} `json:"queues"`
 		}
 		status.Connections = s.ListConnectionInfo()
 		status.Count = len(status.Connections)
+		status.Queues = s.queueManager.GetAllQueueInfo()
 		_ = json.NewEncoder(w).Encode(&status)
 	})
 
@@ -440,10 +468,111 @@ func (s *Server) Close() {
 	_ = s.HTTPListener.Close()
 }
 
+func (s *Server) sendQueueMotd(conn net.Conn, pos int, timeout time.Duration) error {
+	motd := fmt.Sprintf("You are currently in queue position %d. Please wait...\n", pos)
+	_, err := writeWithTimeout(conn, []byte(motd), timeout)
+	return err
+}
+
+func (s *Server) peekModuleName(conn *net.TCPConn, timeout time.Duration) (string, error) {
+	// Set a temporary read deadline
+	if timeout > 0 {
+		conn.SetReadDeadline(time.Now().Add(timeout))
+		defer conn.SetReadDeadline(time.Time{})
+	}
+
+	// Read version line
+	buf := make([]byte, 256)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return "", err
+	}
+
+	// Check version prefix
+	if !bytes.HasPrefix(buf[:n], RsyncdVersionPrefix) {
+		return "", fmt.Errorf("invalid version prefix")
+	}
+
+	// Send server version
+	_, err = conn.Write(RsyncdServerVersion)
+	if err != nil {
+		return "", err
+	}
+
+	// Read module name
+	n, err = conn.Read(buf)
+	if err != nil {
+		return "", err
+	}
+
+	if n == 0 || (n == 1 && buf[0] == '\n') {
+		return "", nil
+	}
+
+	moduleName := string(bytes.TrimSpace(buf[:n]))
+	return moduleName, nil
+}
+
 func (s *Server) handleConn(ctx context.Context, conn *net.TCPConn) {
 	s.activeConnCount.Add(1)
 	defer s.activeConnCount.Add(-1)
 	connIndex := s.connIndex.Add(1)
+
+	info := &ConnInfo{
+		Index:      connIndex,
+		LocalAddr:  conn.LocalAddr().String(),
+		RemoteAddr: conn.RemoteAddr().String(),
+		IsWaiting:  false,
+		QueuePos:   0,
+	}
+
+	s.connInfo.Store(connIndex, info)
+	defer s.connInfo.Delete(connIndex)
+
+	writeTimeout := s.WriteTimeout
+	readTimeout := s.ReadTimeout
+
+	// Check if queue manager requires queuing
+	upstreamAddr := ""
+	if moduleName, err := s.peekModuleName(conn, readTimeout); err == nil && moduleName != "" {
+		s.reloadLock.RLock()
+		upstreamAddr = s.modules[moduleName]
+		s.reloadLock.RUnlock()
+	}
+
+	if upstreamAddr != "" && !s.queueManager.AcquireConn(upstreamAddr, info) {
+		// Need to wait in queue
+		info.IsWaiting = true
+		info.QueuePos = 1
+		s.connInfo.Store(connIndex, info)
+
+		// Send initial queue position
+		_ = s.sendQueueMotd(conn, 1, writeTimeout)
+
+		// Wait in queue
+		err := s.queueManager.WaitInQueue(ctx, upstreamAddr, info, func(pos int) {
+			info.QueuePos = pos
+			s.connInfo.Store(connIndex, info)
+			_ = s.sendQueueMotd(conn, pos, writeTimeout)
+		})
+
+		if err != nil {
+			s.errorLog.F("Queue wait canceled for connection %d: %v", connIndex, err)
+			conn.Close()
+			return
+		}
+
+		// Acquired slot
+		info.IsWaiting = false
+		info.QueuePos = 0
+		s.connInfo.Store(connIndex, info)
+	}
+
+	defer func() {
+		if upstreamAddr != "" {
+			s.queueManager.ReleaseConn(upstreamAddr)
+		}
+	}()
 
 	err := s.relay(ctx, connIndex, conn)
 	if err != nil {
