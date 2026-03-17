@@ -35,11 +35,13 @@ var (
 const lineFeed = '\n'
 
 type ConnInfo struct {
-	Index       uint32    `json:"index"`
-	LocalAddr   string    `json:"local"`
-	RemoteAddr  string    `json:"remote"`
-	ConnectedAt time.Time `json:"connected"`
-	Module      string    `json:"module"`
+	Index         uint32    `json:"index"`
+	LocalAddr     string    `json:"local"`
+	RemoteAddr    string    `json:"remote"`
+	ConnectedAt   time.Time `json:"connected"`
+	Module        string    `json:"module"`
+	SentBytes     atomic.Int64
+	ReceivedBytes atomic.Int64
 }
 
 type Server struct {
@@ -70,6 +72,19 @@ type Server struct {
 	connInfo        sync.Map
 
 	TCPListener, HTTPListener *net.TCPListener
+}
+
+type countingReader struct {
+	reader  io.Reader
+	counter *atomic.Int64
+}
+
+func (cr *countingReader) Read(p []byte) (n int, err error) {
+	n, err = cr.reader.Read(p)
+	if n > 0 {
+		cr.counter.Add(int64(n))
+	}
+	return n, err
 }
 
 func New() *Server {
@@ -160,7 +175,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn *net.TCPConn)
 		RemoteAddr:  downConn.RemoteAddr().String(),
 		ConnectedAt: time.Now().Truncate(time.Second),
 	}
-	s.connInfo.Store(index, info)
+	s.connInfo.Store(index, &info)
 	defer s.connInfo.Delete(index)
 
 	bufPtr := s.bufPool.Get().(*[]byte)
@@ -210,7 +225,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn *net.TCPConn)
 
 	moduleName := string(buf[:n-1]) // trim trailing \n
 	info.Module = moduleName
-	s.connInfo.Store(index, info)
+	s.connInfo.Store(index, &info)
 
 	s.reloadLock.RLock()
 	upstreamAddr, ok := s.modules[moduleName]
@@ -285,35 +300,39 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn *net.TCPConn)
 	_ = upConn.SetDeadline(zeroTime)
 	_ = downConn.SetDeadline(zeroTime)
 
+	// Use countingReader to track bytes in real-time
 	// <sent> and <received> are with the client, not upstream
-	sentBytesC := make(chan int64)
-	receivedBytesC := make(chan int64)
+	downReader := &countingReader{reader: downConn, counter: &info.ReceivedBytes}
+	upReader := &countingReader{reader: upConn, counter: &info.SentBytes}
+
+	sentClosed := make(chan struct{})
+	receivedClosed := make(chan struct{})
+
 	go func() {
-		n, err := io.Copy(upConn, downConn)
+		_, err := io.Copy(upConn, downReader)
 		if err != nil {
 			s.errorLog.F("copy from downstream to upstream: %v", err)
 		}
-		receivedBytesC <- n
-		close(receivedBytesC)
+		close(sentClosed)
 	}()
 	go func() {
-		n, err := io.Copy(downConn, upConn)
+		_, err := io.Copy(downConn, upReader)
 		if err != nil {
 			s.errorLog.F("copy from upstream to downstream: %v", err)
 		}
-		sentBytesC <- n
-		close(sentBytesC)
+		close(receivedClosed)
 	}()
-	var sentBytes, receivedBytes int64
 	select {
-	case receivedBytes = <-receivedBytesC:
+	case <-receivedClosed:
 		_ = upConn.SetLinger(0)
 		_ = upConn.CloseRead()
-		sentBytes = <-sentBytesC
-	case sentBytes = <-sentBytesC:
+	case <-sentClosed:
 		_ = downConn.CloseRead()
-		receivedBytes = <-receivedBytesC
 	}
+
+	sentBytes := info.SentBytes.Load()
+	receivedBytes := info.ReceivedBytes.Load()
+
 	duration := time.Since(info.ConnectedAt)
 	s.accessLog.F("client %s finishes module %s (sent: %d, received: %d, duration: %s)", ip, moduleName, sentBytes, receivedBytes, duration)
 	return nil
@@ -323,10 +342,10 @@ func (s *Server) GetActiveConnectionCount() int64 {
 	return s.activeConnCount.Load()
 }
 
-func (s *Server) ListConnectionInfo() (result []ConnInfo) {
-	result = make([]ConnInfo, 0, s.GetActiveConnectionCount())
+func (s *Server) ListConnectionInfo() (result []*ConnInfo) {
+	result = make([]*ConnInfo, 0, s.GetActiveConnectionCount())
 	s.connInfo.Range(func(_, value any) bool {
-		result = append(result, value.(ConnInfo))
+		result = append(result, value.(*ConnInfo))
 		return true
 	})
 	sort.Slice(result, func(i, j int) bool {
@@ -372,8 +391,8 @@ func (s *Server) runHTTPServer() error {
 		}
 
 		var status struct {
-			Count       int        `json:"count"`
-			Connections []ConnInfo `json:"connections"`
+			Count       int         `json:"count"`
+			Connections []*ConnInfo `json:"connections"`
 		}
 		status.Connections = s.ListConnectionInfo()
 		status.Count = len(status.Connections)
