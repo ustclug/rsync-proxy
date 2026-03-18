@@ -12,6 +12,7 @@ type Upstream struct {
 	Address          string   `toml:"address"`
 	Modules          []string `toml:"modules"`
 	UseProxyProtocol bool     `toml:"use_proxy_protocol"`
+	MaxConnections   int      `toml:"max_connections"`
 }
 
 type ProxySettings struct {

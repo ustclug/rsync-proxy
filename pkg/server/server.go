@@ -42,6 +42,9 @@ type ConnInfo struct {
 	Module        string    `json:"module"`
 	SentBytes     atomic.Int64
 	ReceivedBytes atomic.Int64
+	UpstreamAddr  string `json:"upstream"`
+	IsWaiting     bool   `json:"is_waiting"`
+	QueuePos      int    `json:"queue_pos"`
 }
 
 type Server struct {
@@ -71,6 +74,8 @@ type Server struct {
 	connIndex       atomic.Uint32
 	connInfo        sync.Map
 
+	queueManager *QueueManager
+
 	TCPListener, HTTPListener *net.TCPListener
 }
 
@@ -90,7 +95,7 @@ func (cr *countingReader) Read(p []byte) (n int, err error) {
 func New() *Server {
 	accessLog, _ := logging.NewFileLogger("")
 	errorLog, _ := logging.NewFileLogger("")
-	return &Server{
+	s := &Server{
 		bufPool: sync.Pool{
 			New: func() any {
 				buf := make([]byte, TCPBufferSize)
@@ -101,6 +106,8 @@ func New() *Server {
 		accessLog: accessLog,
 		errorLog:  errorLog,
 	}
+	s.queueManager = NewQueueManager()
+	return s
 }
 
 func (s *Server) loadConfig(c *Config) error {
@@ -142,6 +149,25 @@ func (s *Server) loadConfig(c *Config) error {
 	s.Motd = c.Proxy.Motd
 	s.modules = modules
 	s.proxyProtocol = proxyProtocol
+
+	// Collect current upstream addresses to track changes
+	currentAddrs := make(map[string]struct{})
+	for _, v := range c.Upstreams {
+		currentAddrs[v.Address] = struct{}{}
+	}
+
+	// Unregister upstreams that are no longer in config
+	for _, addr := range s.queueManager.ListAddresses() {
+		if _, ok := currentAddrs[addr]; !ok {
+			s.queueManager.UnregisterUpstream(addr)
+		}
+	}
+
+	// Register all upstreams with queue manager
+	for _, v := range c.Upstreams {
+		s.queueManager.RegisterUpstream(v.Address, v.MaxConnections)
+	}
+
 	return nil
 }
 
@@ -166,7 +192,7 @@ func (s *Server) listAllModules(downConn net.Conn) error {
 	return nil
 }
 
-func (s *Server) relay(ctx context.Context, index uint32, downConn *net.TCPConn) error {
+func (s *Server) relay(ctx context.Context, index uint32, downConn *net.TCPConn, moduleName string, clientVersion []byte) error {
 	defer downConn.Close()
 
 	info := ConnInfo{
@@ -189,41 +215,58 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn *net.TCPConn)
 	writeTimeout := s.WriteTimeout
 	readTimeout := s.ReadTimeout
 
-	n, err := readLine(downConn, buf, readTimeout)
-	if err != nil {
-		return fmt.Errorf("read version from client %s: %w", addr, err)
-	}
-	rsyncdClientVersion := make([]byte, n)
-	copy(rsyncdClientVersion, buf[:n])
-	if !bytes.HasPrefix(rsyncdClientVersion, RsyncdVersionPrefix) {
-		return fmt.Errorf("unknown version from client %s: %q", addr, rsyncdClientVersion)
-	}
+	var rsyncdClientVersion []byte
+	var data []byte
+	var n int
+	var err error
 
-	_, err = writeWithTimeout(downConn, RsyncdServerVersion, writeTimeout)
-	if err != nil {
-		return fmt.Errorf("send version to client %s: %w", addr, err)
-	}
-
-	n, err = readLine(downConn, buf, readTimeout)
-	if err != nil {
-		return fmt.Errorf("read module from client %s: %w", addr, err)
-	}
-	if n == 0 {
-		return fmt.Errorf("empty request from client %s", addr)
-	}
-	data := buf[:n]
-	if s.Motd != "" {
-		_, err = writeWithTimeout(downConn, []byte(s.Motd+"\n"), writeTimeout)
-		if err != nil {
-			return fmt.Errorf("send motd to client %s: %w", addr, err)
+	if moduleName == "" {
+		// Check if handshake was already done by peekModuleName
+		if len(clientVersion) > 0 {
+			// Handshake already done, client wants to list modules
+			s.accessLog.F("client %s requests listing all modules", addr)
+			return s.listAllModules(downConn)
 		}
-	}
-	if len(data) == 1 { // single '\n'
-		s.accessLog.F("client %s requests listing all modules", addr)
-		return s.listAllModules(downConn)
-	}
 
-	moduleName := string(buf[:n-1]) // trim trailing \n
+		// Perform handshake to get module name
+		n, err = readLine(downConn, buf, readTimeout)
+		if err != nil {
+			return fmt.Errorf("read version from client %s: %w", addr, err)
+		}
+		clientVersion = make([]byte, n)
+		copy(clientVersion, buf[:n])
+		if !bytes.HasPrefix(clientVersion, RsyncdVersionPrefix) {
+			return fmt.Errorf("unknown version from client %s: %q", addr, clientVersion)
+		}
+
+		_, err = writeWithTimeout(downConn, RsyncdServerVersion, writeTimeout)
+		if err != nil {
+			return fmt.Errorf("send version to client %s: %w", addr, err)
+		}
+
+		n, err = readLine(downConn, buf, readTimeout)
+		if err != nil {
+			return fmt.Errorf("read module from client %s: %w", addr, err)
+		}
+		if n == 0 {
+			return fmt.Errorf("empty request from client %s", addr)
+		}
+		data = buf[:n]
+		if s.Motd != "" {
+			_, err = writeWithTimeout(downConn, []byte(s.Motd+"\n"), writeTimeout)
+			if err != nil {
+				return fmt.Errorf("send motd to client %s: %w", addr, err)
+			}
+		}
+		if len(data) == 1 { // single '\n'
+			s.accessLog.F("client %s requests listing all modules", addr)
+			return s.listAllModules(downConn)
+		}
+
+		moduleName = string(buf[:n-1]) // trim trailing \n
+	}
+	// Use clientVersion passed from handleConn or read during handshake
+	rsyncdClientVersion = clientVersion
 	info.Module = moduleName
 	s.connInfo.Store(index, &info)
 
@@ -316,7 +359,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn *net.TCPConn)
 		close(sentClosed)
 	}()
 	go func() {
-		_, err := io.Copy(downConn, upReader)
+		_, err = io.Copy(downConn, upReader)
 		if err != nil {
 			s.errorLog.F("copy from upstream to downstream: %v", err)
 		}
@@ -393,9 +436,11 @@ func (s *Server) runHTTPServer() error {
 		var status struct {
 			Count       int         `json:"count"`
 			Connections []*ConnInfo `json:"connections"`
+			Queues      interface{} `json:"queues"`
 		}
 		status.Connections = s.ListConnectionInfo()
 		status.Count = len(status.Connections)
+		status.Queues = s.queueManager.GetAllQueueInfo()
 		_ = json.NewEncoder(w).Encode(&status)
 	})
 
@@ -440,12 +485,128 @@ func (s *Server) Close() {
 	_ = s.HTTPListener.Close()
 }
 
+func (s *Server) sendQueueMotd(conn net.Conn, pos int, timeout time.Duration) error {
+	motd := fmt.Sprintf("You are currently in queue position %d. Please wait...\n", pos)
+	_, err := writeWithTimeout(conn, []byte(motd), timeout)
+	return err
+}
+
+func (s *Server) peekModuleName(conn *net.TCPConn, timeout time.Duration) (clientVersion []byte, moduleName string, err error) {
+	// Set a temporary read deadline
+	if timeout > 0 {
+		if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+			return nil, "", err
+		}
+		defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
+	}
+
+	// Read version line
+	buf := make([]byte, 256)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return nil, "", err
+	}
+
+	// Check version prefix
+	if !bytes.HasPrefix(buf[:n], RsyncdVersionPrefix) {
+		return nil, "", fmt.Errorf("invalid version prefix")
+	}
+
+	// Save client version
+	clientVersion = make([]byte, n)
+	copy(clientVersion, buf[:n])
+
+	// Send server version
+	_, err = conn.Write(RsyncdServerVersion)
+	if err != nil {
+		return nil, "", err
+	}
+
+	// Send motd if configured
+	if s.Motd != "" {
+		_, err = conn.Write([]byte(s.Motd + "\n"))
+		if err != nil {
+			return nil, "", err
+		}
+	}
+
+	// Read module name
+	n, err = conn.Read(buf)
+	if err != nil {
+		return nil, "", err
+	}
+
+	if n == 0 || (n == 1 && buf[0] == '\n') {
+		return clientVersion, "", nil
+	}
+
+	moduleName = string(bytes.TrimSpace(buf[:n]))
+	return clientVersion, moduleName, nil
+}
+
 func (s *Server) handleConn(ctx context.Context, conn *net.TCPConn) {
 	s.activeConnCount.Add(1)
 	defer s.activeConnCount.Add(-1)
 	connIndex := s.connIndex.Add(1)
 
-	err := s.relay(ctx, connIndex, conn)
+	info := &ConnInfo{
+		Index:      connIndex,
+		LocalAddr:  conn.LocalAddr().String(),
+		RemoteAddr: conn.RemoteAddr().String(),
+		IsWaiting:  false,
+		QueuePos:   0,
+	}
+
+	s.connInfo.Store(connIndex, info)
+	defer s.connInfo.Delete(connIndex)
+
+	writeTimeout := s.WriteTimeout
+	readTimeout := s.ReadTimeout
+
+	// Check if queue manager requires queuing
+	upstreamAddr := ""
+	clientVersion, moduleName, _ := s.peekModuleName(conn, readTimeout)
+	if moduleName != "" {
+		s.reloadLock.RLock()
+		upstreamAddr = s.modules[moduleName]
+		s.reloadLock.RUnlock()
+	}
+
+	if upstreamAddr != "" && !s.queueManager.AcquireConn(upstreamAddr, info) {
+		// Need to wait in queue
+		info.IsWaiting = true
+		info.QueuePos = 1
+		s.connInfo.Store(connIndex, info)
+
+		// Send initial queue position
+		_ = s.sendQueueMotd(conn, 1, writeTimeout)
+
+		// Wait in queue
+		err := s.queueManager.WaitInQueue(ctx, upstreamAddr, info, func(pos int) {
+			info.QueuePos = pos
+			s.connInfo.Store(connIndex, info)
+			_ = s.sendQueueMotd(conn, pos, writeTimeout)
+		})
+
+		if err != nil {
+			s.errorLog.F("Queue wait canceled for connection %d: %v", connIndex, err)
+			conn.Close()
+			return
+		}
+
+		// Acquired slot
+		info.IsWaiting = false
+		info.QueuePos = 0
+		s.connInfo.Store(connIndex, info)
+	}
+
+	defer func() {
+		if upstreamAddr != "" {
+			s.queueManager.ReleaseConn(upstreamAddr)
+		}
+	}()
+
+	err := s.relay(ctx, connIndex, conn, moduleName, clientVersion)
 	if err != nil {
 		s.errorLog.F("handleConn: %s", err)
 	}
