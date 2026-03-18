@@ -75,3 +75,45 @@ modules = ["foo1", "foo2"]
 		t.Errorf("Wrong motd\nExpected: %#v\nGot: %#v\n", expectedMotd, s.modules)
 	}
 }
+
+func TestLoadMaxConnectionsInConfig(t *testing.T) {
+	s := New()
+	configContent := `
+[upstreams.u1]
+address = "127.0.0.1:1234"
+max_connections = 5
+modules = ["foo1"]
+
+[upstreams.u2]
+address = "127.0.0.1:1235"
+modules = ["bar1"]
+`
+	err := s.ReadConfig(strings.NewReader(configContent))
+	if err != nil {
+		t.Fatalf("Load config: %s", err)
+	}
+
+	// Check that queue manager has registered the upstreams
+	addrs := s.queueManager.ListAddresses()
+	if len(addrs) != 2 {
+		t.Errorf("Expected 2 upstreams registered, got %d", len(addrs))
+	}
+
+	// Check queue info for u1 (with limit)
+	active, max, waiting := s.queueManager.GetQueueInfo("127.0.0.1:1234")
+	if max != 5 {
+		t.Errorf("Expected max_connections=5 for u1, got %d", max)
+	}
+	if active != 0 {
+		t.Errorf("Expected 0 active connections initially, got %d", active)
+	}
+	if waiting != 0 {
+		t.Errorf("Expected 0 waiting connections initially, got %d", waiting)
+	}
+
+	// Check queue info for u2 (no limit, should be 0)
+	_, max2, _ := s.queueManager.GetQueueInfo("127.0.0.1:1235")
+	if max2 != 0 {
+		t.Errorf("Expected max_connections=0 (unlimited) for u2, got %d", max2)
+	}
+}
