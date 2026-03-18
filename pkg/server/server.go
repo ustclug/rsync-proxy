@@ -477,8 +477,10 @@ func (s *Server) sendQueueMotd(conn net.Conn, pos int, timeout time.Duration) er
 func (s *Server) peekModuleName(conn *net.TCPConn, timeout time.Duration) (string, error) {
 	// Set a temporary read deadline
 	if timeout > 0 {
-		conn.SetReadDeadline(time.Now().Add(timeout))
-		defer conn.SetReadDeadline(time.Time{})
+		if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+			return "", err
+		}
+		defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
 	}
 
 	// Read version line
