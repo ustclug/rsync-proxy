@@ -21,6 +21,7 @@ type UpstreamQueue struct {
 	activeConn  atomic.Int32
 	waitingConn sync.Map // connIndex -> *ConnInfo
 	notifyCh    chan struct{}
+	closed      atomic.Bool
 }
 
 // NewQueueManager creates a new queue manager
@@ -49,6 +50,7 @@ func (qm *QueueManager) UnregisterUpstream(address string) {
 	defer qm.mu.Unlock()
 
 	if q, ok := qm.queues[address]; ok {
+		q.closed.Store(true)
 		close(q.notifyCh)
 		delete(qm.queues, address)
 	}
@@ -129,6 +131,11 @@ func (qm *QueueManager) WaitInQueue(ctx context.Context, address string, info *C
 	defer ticker.Stop()
 
 	for {
+		// Check if queue is closed
+		if q.closed.Load() {
+			return fmt.Errorf("queue closed for upstream: %s", address)
+		}
+
 		// Check current position
 		pos := q.getQueuePosition(info.Index)
 		onUpdate(pos)

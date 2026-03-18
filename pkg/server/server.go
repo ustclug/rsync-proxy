@@ -192,7 +192,7 @@ func (s *Server) listAllModules(downConn net.Conn) error {
 	return nil
 }
 
-func (s *Server) relay(ctx context.Context, index uint32, downConn *net.TCPConn) error {
+func (s *Server) relay(ctx context.Context, index uint32, downConn *net.TCPConn, moduleName string, clientVersion []byte) error {
 	defer downConn.Close()
 
 	info := ConnInfo{
@@ -215,41 +215,58 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn *net.TCPConn)
 	writeTimeout := s.WriteTimeout
 	readTimeout := s.ReadTimeout
 
-	n, err := readLine(downConn, buf, readTimeout)
-	if err != nil {
-		return fmt.Errorf("read version from client %s: %w", addr, err)
-	}
-	rsyncdClientVersion := make([]byte, n)
-	copy(rsyncdClientVersion, buf[:n])
-	if !bytes.HasPrefix(rsyncdClientVersion, RsyncdVersionPrefix) {
-		return fmt.Errorf("unknown version from client %s: %q", addr, rsyncdClientVersion)
-	}
+	var rsyncdClientVersion []byte
+	var data []byte
+	var n int
+	var err error
 
-	_, err = writeWithTimeout(downConn, RsyncdServerVersion, writeTimeout)
-	if err != nil {
-		return fmt.Errorf("send version to client %s: %w", addr, err)
-	}
-
-	n, err = readLine(downConn, buf, readTimeout)
-	if err != nil {
-		return fmt.Errorf("read module from client %s: %w", addr, err)
-	}
-	if n == 0 {
-		return fmt.Errorf("empty request from client %s", addr)
-	}
-	data := buf[:n]
-	if s.Motd != "" {
-		_, err = writeWithTimeout(downConn, []byte(s.Motd+"\n"), writeTimeout)
-		if err != nil {
-			return fmt.Errorf("send motd to client %s: %w", addr, err)
+	if moduleName == "" {
+		// Check if handshake was already done by peekModuleName
+		if len(clientVersion) > 0 {
+			// Handshake already done, client wants to list modules
+			s.accessLog.F("client %s requests listing all modules", addr)
+			return s.listAllModules(downConn)
 		}
-	}
-	if len(data) == 1 { // single '\n'
-		s.accessLog.F("client %s requests listing all modules", addr)
-		return s.listAllModules(downConn)
-	}
 
-	moduleName := string(buf[:n-1]) // trim trailing \n
+		// Perform handshake to get module name
+		n, err = readLine(downConn, buf, readTimeout)
+		if err != nil {
+			return fmt.Errorf("read version from client %s: %w", addr, err)
+		}
+		clientVersion = make([]byte, n)
+		copy(clientVersion, buf[:n])
+		if !bytes.HasPrefix(clientVersion, RsyncdVersionPrefix) {
+			return fmt.Errorf("unknown version from client %s: %q", addr, clientVersion)
+		}
+
+		_, err = writeWithTimeout(downConn, RsyncdServerVersion, writeTimeout)
+		if err != nil {
+			return fmt.Errorf("send version to client %s: %w", addr, err)
+		}
+
+		n, err = readLine(downConn, buf, readTimeout)
+		if err != nil {
+			return fmt.Errorf("read module from client %s: %w", addr, err)
+		}
+		if n == 0 {
+			return fmt.Errorf("empty request from client %s", addr)
+		}
+		data = buf[:n]
+		if s.Motd != "" {
+			_, err = writeWithTimeout(downConn, []byte(s.Motd+"\n"), writeTimeout)
+			if err != nil {
+				return fmt.Errorf("send motd to client %s: %w", addr, err)
+			}
+		}
+		if len(data) == 1 { // single '\n'
+			s.accessLog.F("client %s requests listing all modules", addr)
+			return s.listAllModules(downConn)
+		}
+
+		moduleName = string(buf[:n-1]) // trim trailing \n
+	}
+	// Use clientVersion passed from handleConn or read during handshake
+	rsyncdClientVersion = clientVersion
 	info.Module = moduleName
 	s.connInfo.Store(index, &info)
 
@@ -474,11 +491,11 @@ func (s *Server) sendQueueMotd(conn net.Conn, pos int, timeout time.Duration) er
 	return err
 }
 
-func (s *Server) peekModuleName(conn *net.TCPConn, timeout time.Duration) (string, error) {
+func (s *Server) peekModuleName(conn *net.TCPConn, timeout time.Duration) (clientVersion []byte, moduleName string, err error) {
 	// Set a temporary read deadline
 	if timeout > 0 {
 		if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
-			return "", err
+			return nil, "", err
 		}
 		defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
 	}
@@ -487,32 +504,44 @@ func (s *Server) peekModuleName(conn *net.TCPConn, timeout time.Duration) (strin
 	buf := make([]byte, 256)
 	n, err := conn.Read(buf)
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 
 	// Check version prefix
 	if !bytes.HasPrefix(buf[:n], RsyncdVersionPrefix) {
-		return "", fmt.Errorf("invalid version prefix")
+		return nil, "", fmt.Errorf("invalid version prefix")
 	}
+
+	// Save client version
+	clientVersion = make([]byte, n)
+	copy(clientVersion, buf[:n])
 
 	// Send server version
 	_, err = conn.Write(RsyncdServerVersion)
 	if err != nil {
-		return "", err
+		return nil, "", err
+	}
+
+	// Send motd if configured
+	if s.Motd != "" {
+		_, err = conn.Write([]byte(s.Motd + "\n"))
+		if err != nil {
+			return nil, "", err
+		}
 	}
 
 	// Read module name
 	n, err = conn.Read(buf)
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 
 	if n == 0 || (n == 1 && buf[0] == '\n') {
-		return "", nil
+		return clientVersion, "", nil
 	}
 
-	moduleName := string(bytes.TrimSpace(buf[:n]))
-	return moduleName, nil
+	moduleName = string(bytes.TrimSpace(buf[:n]))
+	return clientVersion, moduleName, nil
 }
 
 func (s *Server) handleConn(ctx context.Context, conn *net.TCPConn) {
@@ -536,7 +565,8 @@ func (s *Server) handleConn(ctx context.Context, conn *net.TCPConn) {
 
 	// Check if queue manager requires queuing
 	upstreamAddr := ""
-	if moduleName, err := s.peekModuleName(conn, readTimeout); err == nil && moduleName != "" {
+	clientVersion, moduleName, _ := s.peekModuleName(conn, readTimeout)
+	if moduleName != "" {
 		s.reloadLock.RLock()
 		upstreamAddr = s.modules[moduleName]
 		s.reloadLock.RUnlock()
@@ -576,7 +606,7 @@ func (s *Server) handleConn(ctx context.Context, conn *net.TCPConn) {
 		}
 	}()
 
-	err := s.relay(ctx, connIndex, conn)
+	err := s.relay(ctx, connIndex, conn, moduleName, clientVersion)
 	if err != nil {
 		s.errorLog.F("handleConn: %s", err)
 	}
