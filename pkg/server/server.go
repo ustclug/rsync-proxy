@@ -162,8 +162,8 @@ func (s *Server) listAllModules(downConn net.Conn) error {
 		buf.WriteRune(lineFeed)
 	}
 	buf.Write(RsyncdExit)
-	_, _ = writeWithTimeout(downConn, buf.Bytes(), timeout)
-	return nil
+	_, err := writeWithTimeout(downConn, buf.Bytes(), timeout)
+	return err
 }
 
 func (s *Server) relay(ctx context.Context, index uint32, downConn *net.TCPConn) error {

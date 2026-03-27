@@ -23,7 +23,6 @@ func TestListModules(t *testing.T) {
 	output := string(outputBytes)
 	expectedOutput := "bar\nfoo\n"
 	r.Equal(expectedOutput, output)
-
 }
 
 func TestSyncSingleFile(t *testing.T) {

@@ -1,0 +1,66 @@
+version: "2"
+run:
+  modules-download-mode: readonly
+linters:
+  enable:
+    # - copyloopvar
+    - exhaustive
+    - gochecknoinits
+    - goconst
+    - gocritic
+    - importas
+    - misspell
+    - nolintlint
+    - prealloc
+    - revive
+    - testifylint
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - whitespace
+  settings:
+    exhaustive:
+      explicit-exhaustive-switch: true
+    govet:
+      enable:
+        - nilness
+    revive:
+      confidence: 0.6
+      rules:
+        - name: blank-imports
+        - name: dot-imports
+        - name: error-strings
+        - name: errorf
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - errcheck
+          - unparam
+        path: _test.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - goimports
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/ustclug/rsync-proxy)
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
