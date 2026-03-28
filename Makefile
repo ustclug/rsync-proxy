@@ -16,11 +16,11 @@ all: $(PLATFORM_LIST)
 
 darwin-amd64:
 	GOARCH=amd64 GOOS=darwin $(GOBUILD) -o $(OUTDIR)/$(NAME)-$(VERSION)-$@/$(NAME)
-	cp dist/* README.md $(OUTDIR)/$(NAME)-$(VERSION)-$@/
+	cp -r assets/* README.md $(OUTDIR)/$(NAME)-$(VERSION)-$@/
 
 linux-amd64:
 	GOARCH=amd64 GOOS=linux $(GOBUILD) -o $(OUTDIR)/$(NAME)-$(VERSION)-$@/$(NAME)
-	cp dist/* README.md $(OUTDIR)/$(NAME)-$(VERSION)-$@/
+	cp -r assets/* README.md $(OUTDIR)/$(NAME)-$(VERSION)-$@/
 
 gz_releases=$(addsuffix .tar.gz, $(PLATFORM_LIST))
 
