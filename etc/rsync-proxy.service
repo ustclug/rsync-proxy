@@ -1,13 +1,14 @@
 [Unit]
 Description=Rsync Proxy
 After=network.target
+ConditionPathExists=/etc/rsync-proxy/config.toml
 
 [Service]
 Restart=on-failure
 StartLimitInterval=10s
 
-ExecStart=/usr/local/bin/rsync-proxy --config=/etc/rsync-proxy/config.toml
-ExecReload=/usr/local/bin/rsync-proxy --config=/etc/rsync-proxy/config.toml --reload
+ExecStart=/usr/bin/rsync-proxy --config=/etc/rsync-proxy/config.toml
+ExecReload=/usr/bin/rsync-proxy --config=/etc/rsync-proxy/config.toml --reload
 
 User=nobody
 Group=nogroup

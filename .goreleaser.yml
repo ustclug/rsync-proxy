@@ -1,0 +1,54 @@
+version: 2
+before:
+  hooks:
+    - go mod tidy
+builds:
+  - id: rsync-proxy
+    binary: rsync-proxy
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/ustclug/rsync-proxy/pkg/info.Version={{.Version}} -X github.com/ustclug/rsync-proxy/pkg/info.BuildDate={{.Date}} -X github.com/ustclug/rsync-proxy/pkg/info.GitCommit={{.Commit}}
+archives:
+  - formats: binary
+    name_template: "{{ .Binary }}_{{ .Os  }}_{{ .Arch }}"
+checksum:
+  name_template: 'checksums.txt'
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+changelog:
+  use: github-native
+nfpms:
+  - id: default
+    package_name: rsync-proxy
+    homepage: https://github.com/ustclug/rsync-proxy
+    maintainer: "USTC LUG <lug@ustc.edu.cn>"
+    description: |-
+      A load balancer for rsync
+    formats:
+      - deb
+    umask: 0o022
+    dependencies:
+      - "rsync"
+    section: admin
+    priority: extra
+    provides:
+      - rsync-proxy
+    scripts:
+      postinstall: etc/postinst.sh
+      preremove: etc/prerm.sh
+    contents:
+      - src: etc/config.example.toml
+        dst: /etc/rsync-proxy/config.example.toml
+      - src: etc/rsync-proxy.service
+        dst: /lib/systemd/system/
+
+# modelines, feel free to remove those if you don't want/use them:
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# vim: set ts=2 sw=2 tw=0 fo=cnqoj
