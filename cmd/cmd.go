@@ -56,11 +56,11 @@ func SendConnectionsRequest(addr string, stdout, stderr io.Writer) error {
 	var result struct {
 		Connections []struct {
 			Index         int       `json:"index"`
-			RemoteAddr    string    `json:"remote_addr"`
+			RemoteAddr    string    `json:"remote"`
 			Module        string    `json:"module"`
-			ConnectedAt   time.Time `json:"connected_at"`
-			ReceivedBytes int64     `json:"received_bytes"`
-			SentBytes     int64     `json:"sent_bytes"`
+			ConnectedAt   time.Time `json:"connected"`
+			ReceivedBytes int64     `json:"receivedBytes"`
+			SentBytes     int64     `json:"sentBytes"`
 		} `json:"connections"`
 		Count int `json:"count"`
 	}
@@ -76,7 +76,7 @@ func SendConnectionsRequest(addr string, stdout, stderr io.Writer) error {
 
 	_, _ = fmt.Fprintln(stdout, "=== Active Connections ===")
 	for _, conn := range result.Connections {
-		_, _ = fmt.Fprintf(stdout, "Index: %d, IP: %s, Module: %s, Connected: %s, Recv: %d bytes, Send: %d bytes\n",
+		_, _ = fmt.Fprintf(stdout, "Index: %d, Addr: %s, Module: %s, Connected: %s, Recv: %d bytes, Send: %d bytes\n",
 			conn.Index,
 			conn.RemoteAddr,
 			conn.Module,

@@ -35,13 +35,34 @@ var (
 const lineFeed = '\n'
 
 type ConnInfo struct {
-	Index         uint32    `json:"index"`
-	LocalAddr     string    `json:"local"`
-	RemoteAddr    string    `json:"remote"`
-	ConnectedAt   time.Time `json:"connected"`
-	Module        string    `json:"module"`
+	Index         uint32
+	LocalAddr     string
+	RemoteAddr    string
+	ConnectedAt   time.Time
+	Module        string
 	SentBytes     atomic.Int64
 	ReceivedBytes atomic.Int64
+}
+
+func (c *ConnInfo) MarshalJSON() ([]byte, error) {
+	// Handle atomic value (cannot marshal directly)
+	return json.Marshal(struct {
+		Index         uint32    `json:"index"`
+		LocalAddr     string    `json:"local"`
+		RemoteAddr    string    `json:"remote"`
+		ConnectedAt   time.Time `json:"connected"`
+		Module        string    `json:"module"`
+		SentBytes     int64     `json:"sentBytes"`
+		ReceivedBytes int64     `json:"receivedBytes"`
+	}{
+		Index:         c.Index,
+		LocalAddr:     c.LocalAddr,
+		RemoteAddr:    c.RemoteAddr,
+		ConnectedAt:   c.ConnectedAt,
+		Module:        c.Module,
+		SentBytes:     c.SentBytes.Load(),
+		ReceivedBytes: c.ReceivedBytes.Load(),
+	})
 }
 
 type Server struct {
