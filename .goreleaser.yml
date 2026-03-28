@@ -41,13 +41,20 @@ nfpms:
     provides:
       - rsync-proxy
     scripts:
-      postinstall: etc/postinst.sh
-      preremove: etc/prerm.sh
+      postinstall: assets/postinst.sh
+      preremove: assets/prerm.sh
+      postremove: assets/postrm.sh
     contents:
-      - src: etc/config.example.toml
+      - src: ./assets/config.example.toml
         dst: /etc/rsync-proxy/config.example.toml
-      - src: etc/rsync-proxy.service
+      - src: ./assets/rsync-proxy.service
         dst: /lib/systemd/system/
+      - src: ./assets/fail2ban/filter.d/rsync-proxy-nonexist.conf
+        dst: /etc/fail2ban/filter.d/
+      - src: ./assets/fail2ban/filter.d/rsync-proxy-connection.conf
+        dst: /etc/fail2ban/filter.d/
+      - src: ./assets/logrotate.conf
+        dst: /etc/logrotate.d/rsync-proxy
 
 # modelines, feel free to remove those if you don't want/use them:
 # yaml-language-server: $schema=https://goreleaser.com/static/schema.json

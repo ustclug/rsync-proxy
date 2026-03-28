@@ -10,7 +10,8 @@ StartLimitInterval=10s
 ExecStart=/usr/bin/rsync-proxy --config=/etc/rsync-proxy/config.toml
 ExecReload=/usr/bin/rsync-proxy --config=/etc/rsync-proxy/config.toml --reload
 
-User=nobody
+LogsDirectory=rsync-proxy
+User=rsync-proxy
 Group=nogroup
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 
