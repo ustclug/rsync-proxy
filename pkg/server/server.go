@@ -103,7 +103,7 @@ func New() *Server {
 	}
 }
 
-func (s *Server) loadConfig(c *Config) error {
+func (s *Server) loadConfig(c *Config, openLog bool) error {
 	if len(c.Upstreams) == 0 {
 		return fmt.Errorf("no upstream found")
 	}
@@ -133,11 +133,13 @@ func (s *Server) loadConfig(c *Config) error {
 	if s.HTTPListenAddr == "" {
 		s.HTTPListenAddr = c.Proxy.ListenHTTP
 	}
-	if err := s.accessLog.SetFile(c.Proxy.AccessLog); err != nil {
-		return err
-	}
-	if err := s.errorLog.SetFile(c.Proxy.ErrorLog); err != nil {
-		return err
+	if openLog {
+		if err := s.accessLog.SetFile(c.Proxy.AccessLog); err != nil {
+			return err
+		}
+		if err := s.errorLog.SetFile(c.Proxy.ErrorLog); err != nil {
+			return err
+		}
 	}
 	s.Motd = c.Proxy.Motd
 	s.modules = modules
@@ -371,7 +373,7 @@ func (s *Server) runHTTPServer() error {
 			Message string `json:"message"`
 		}
 
-		err := s.ReadConfigFromFile()
+		err := s.ReadConfigFromFile(true)
 		if err != nil {
 			log.Printf("[ERROR] Load config: %s", err)
 			s.errorLog.F("[ERROR] Load config: %s", err)

@@ -127,7 +127,8 @@ func New() *cobra.Command {
 
 			log.SetOutput(cmd.ErrOrStderr())
 
-			err := s.ReadConfigFromFile()
+			// For reload and connections command, we don't want to open log file as rw, to allow other users to use.
+			err := s.ReadConfigFromFile(!reload && !connections)
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}

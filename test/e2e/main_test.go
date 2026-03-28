@@ -103,7 +103,7 @@ func startProxy(t *testing.T, overrides ...func(*server.Server)) *server.Server 
 		override(s)
 	}
 
-	err := s.ReadConfigFromFile()
+	err := s.ReadConfigFromFile(true)
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
 	}

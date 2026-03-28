@@ -21,7 +21,7 @@ modules = ["bar1"]
 address = "example.com:1235"
 modules = ["bar2"]
 `
-	err := s.ReadConfig(strings.NewReader(configContent))
+	err := s.ReadConfig(strings.NewReader(configContent), true)
 	if err != nil {
 		t.Fatalf("Load config: %s", err)
 	}
@@ -47,7 +47,7 @@ modules = ["foo1", "foo2"]
 address = "127.0.0.1:1235"
 modules = ["foo1"]
 `
-	err := s.ReadConfig(strings.NewReader(configContent))
+	err := s.ReadConfig(strings.NewReader(configContent), true)
 	if err == nil {
 		t.Fatalf("Unexpected success")
 	}
@@ -66,7 +66,7 @@ motd = "Proudly served by rsync-proxy\ntest newline"
 address = "127.0.0.1:1234"
 modules = ["foo1", "foo2"]
 `
-	err := s.ReadConfig(strings.NewReader(configContent))
+	err := s.ReadConfig(strings.NewReader(configContent), true)
 	if err != nil {
 		t.Fatalf("Load config: %s", err)
 	}

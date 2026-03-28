@@ -27,7 +27,7 @@ type Config struct {
 	Upstreams map[string]*Upstream `toml:"upstreams"`
 }
 
-func (s *Server) ReadConfig(r io.Reader) error {
+func (s *Server) ReadConfig(r io.Reader, openLog bool) error {
 	log.Print("[INFO] loading config")
 
 	dec := toml.NewDecoder(r)
@@ -36,14 +36,14 @@ func (s *Server) ReadConfig(r io.Reader) error {
 	if err != nil {
 		return err
 	}
-	return s.loadConfig(&c)
+	return s.loadConfig(&c, openLog)
 }
 
-func (s *Server) ReadConfigFromFile() error {
+func (s *Server) ReadConfigFromFile(openLog bool) error {
 	f, err := os.Open(s.ConfigPath)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	return s.ReadConfig(f)
+	return s.ReadConfig(f, openLog)
 }
