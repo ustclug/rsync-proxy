@@ -20,6 +20,9 @@ type ProxySettings struct {
 	Motd       string `toml:"motd"`
 	AccessLog  string `toml:"access_log"`
 	ErrorLog   string `toml:"error_log"`
+
+	MaxActiveConns int `toml:"max_active_connections"`
+	MaxQueuedConns int `toml:"max_queued_connections"`
 }
 
 type Config struct {

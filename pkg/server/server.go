@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/ustclug/rsync-proxy/pkg/logging"
+	"github.com/ustclug/rsync-proxy/pkg/queue"
 )
 
 const (
@@ -88,6 +89,8 @@ type Server struct {
 	// address -> enable proxy protocol or not
 	proxyProtocol map[string]bool
 
+	queue *queue.Queue
+
 	activeConnCount atomic.Int64
 	connIndex       atomic.Uint32
 	connInfo        sync.Map
@@ -127,6 +130,11 @@ func New() *Server {
 func (s *Server) loadConfig(c *Config, openLog bool) error {
 	if len(c.Upstreams) == 0 {
 		return fmt.Errorf("no upstream found")
+	}
+
+	// TODO: hot-reload queue settings?
+	if s.queue == nil {
+		s.queue = queue.New(c.Proxy.MaxActiveConns, c.Proxy.MaxQueuedConns)
 	}
 
 	modules := map[string]string{}
@@ -241,6 +249,40 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn *net.TCPConn)
 			return fmt.Errorf("send motd to client %s: %w", addr, err)
 		}
 	}
+
+	chStatus := s.queue.Acquire()
+	status := <-chStatus
+	if !status.Ok() {
+		// Send initial queuing notice
+		msg := fmt.Sprintf("Server has reached the maximum number of %d connections. Your request is being queued.\n", s.queue.GetMax())
+		msg += fmt.Sprintf("Your position: %d, Total queued: %d\n", status.Index+1, status.Max)
+		_, err = writeWithTimeout(downConn, []byte(msg), writeTimeout)
+		if err != nil {
+			s.queue.Abort(chStatus)
+			return fmt.Errorf("send queue notice to client %s: %w", addr, err)
+		}
+
+	queuing:
+		for !status.Ok() {
+			// Wait until status update, or repeat message after some time
+			select {
+			case status = <-chStatus:
+				if status.Ok() {
+					break queuing
+				}
+			case <-time.After(1 * time.Minute):
+			}
+
+			msg := fmt.Sprintf("Your position: %d, Total queued: %d\n", status.Index+1, status.Max)
+			_, err = writeWithTimeout(downConn, []byte(msg), writeTimeout)
+			if err != nil {
+				s.queue.Abort(chStatus)
+				return fmt.Errorf("send queue notice to client %s: %w", addr, err)
+			}
+		}
+	}
+	defer s.queue.Release()
+
 	if len(data) == 1 { // single '\n'
 		s.accessLog.F("client %s requests listing all modules", addr)
 		return s.listAllModules(downConn)
