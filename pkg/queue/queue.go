@@ -31,7 +31,14 @@ func New(max, maxQueued int) *Queue {
 }
 
 func (q *Queue) GetMax() int {
+	// This is not protected by q.mu, but we don't expect racing calls between GetMax and SetMax.
 	return q.max
+}
+
+func (q *Queue) SetMax(max, maxQueued int) {
+	q.mu.Lock()
+	q.max, q.listMax = max, maxQueued
+	q.mu.Unlock()
 }
 
 func (q *Queue) Acquire() <-chan Status {
@@ -45,7 +52,8 @@ func (q *Queue) Acquire() <-chan Status {
 		close(ch)
 	} else { // q.current >= q.max
 		q.list = append(q.list, queueItem{ch})
-		ch <- Status{Index: len(q.list) - 1, Max: len(q.list)}
+		surplus := q.current - q.max
+		ch <- Status{Index: surplus + len(q.list) - 1, Max: surplus + len(q.list)}
 	}
 	return ch
 }
@@ -84,8 +92,9 @@ func (q *Queue) Abort(ch <-chan Status) {
 }
 
 func (q *Queue) broadcastStatus() {
+	surplus := q.current - q.max
 	for i := range q.list {
-		q.list[i].ch <- Status{Index: i, Max: len(q.list)}
+		q.list[i].ch <- Status{Index: surplus + i, Max: surplus + len(q.list)}
 	}
 }
 

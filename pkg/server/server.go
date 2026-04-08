@@ -124,6 +124,7 @@ func New() *Server {
 		dialer:    net.Dialer{}, // customize keep alive interval?
 		accessLog: accessLog,
 		errorLog:  errorLog,
+		queue:     queue.New(0, 0),
 	}
 }
 
@@ -132,10 +133,7 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 		return fmt.Errorf("no upstream found")
 	}
 
-	// TODO: hot-reload queue settings?
-	if s.queue == nil {
-		s.queue = queue.New(c.Proxy.MaxActiveConns, c.Proxy.MaxQueuedConns)
-	}
+	s.queue.SetMax(c.Proxy.MaxActiveConns, c.Proxy.MaxQueuedConns)
 
 	modules := map[string]string{}
 	proxyProtocol := map[string]bool{}
