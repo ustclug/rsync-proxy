@@ -46,7 +46,7 @@ func (q *Queue) Acquire() <-chan Status {
 	defer q.mu.Unlock()
 
 	ch := make(chan Status, 1)
-	if q.current < q.max {
+	if q.current < q.max || q.max == 0 { // q.max == 0 => no limit
 		q.current++
 		ch <- q.makeOkStatus()
 		close(ch)
