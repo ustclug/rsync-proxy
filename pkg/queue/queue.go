@@ -31,8 +31,10 @@ func New(max, maxQueued int) *Queue {
 }
 
 func (q *Queue) GetMax() int {
-	// This is not protected by q.mu, but we don't expect racing calls between GetMax and SetMax.
-	return q.max
+	q.mu.Lock()
+	ret := q.max
+	q.mu.Unlock()
+	return ret
 }
 
 func (q *Queue) SetMax(max, maxQueued int) {
