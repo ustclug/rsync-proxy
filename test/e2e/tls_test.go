@@ -152,7 +152,7 @@ func TestTLSListModules(t *testing.T) {
 
 	proxy := startProxy(t, func(s *server.Server) {
 		s.ConfigPath = configPath
-		s.TLSListenAddr = "127.0.0.1:0"
+		s.TLSListenAddr = LOCAL_BIND_ADDR
 	})
 	ensureTLSPortIsReady(t, proxy.TLSListenAddr)
 
@@ -175,7 +175,7 @@ func TestReloadTLSCertificateE2E(t *testing.T) {
 
 	proxy := startProxy(t, func(s *server.Server) {
 		s.ConfigPath = configPath
-		s.TLSListenAddr = "127.0.0.1:0"
+		s.TLSListenAddr = LOCAL_BIND_ADDR
 	})
 	ensureTLSPortIsReady(t, proxy.TLSListenAddr)
 
@@ -193,7 +193,7 @@ func TestReloadTLSCertificateE2E(t *testing.T) {
 	r.NoError(err)
 	r.Contains(reloadOutput.String(), "Successfully reloaded")
 
-	outputBytes, err = newRsyncSSLCommand(firstCert.certPath, getRsyncTLSPath(proxy, "/")).CombinedOutput()
+	_, err = newRsyncSSLCommand(firstCert.certPath, getRsyncTLSPath(proxy, "/")).CombinedOutput()
 	r.Error(err)
 
 	outputBytes, err = newRsyncSSLCommand(secondCert.certPath, getRsyncTLSPath(proxy, "/")).CombinedOutput()

@@ -107,8 +107,8 @@ func startProxy(t *testing.T, overrides ...func(*server.Server)) *server.Server 
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
 	}
-	s.ListenAddr = "127.0.0.1:0"
-	s.HTTPListenAddr = "127.0.0.1:0"
+	s.ListenAddr = LOCAL_BIND_ADDR
+	s.HTTPListenAddr = LOCAL_BIND_ADDR
 
 	err = s.Listen()
 	if err != nil {
