@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -70,6 +71,7 @@ type Server struct {
 	// --- Options section
 	// Listen Address
 	ListenAddr     string
+	TLSListenAddr  string
 	HTTPListenAddr string
 	ConfigPath     string
 
@@ -87,7 +89,9 @@ type Server struct {
 	// name -> address
 	modules map[string]string
 	// address -> enable proxy protocol or not
-	proxyProtocol map[string]bool
+	proxyProtocol  map[string]bool
+	tlsCertificate *tls.Certificate
+	tlsConfig      *tls.Config
 
 	queue *queue.Queue
 
@@ -95,7 +99,10 @@ type Server struct {
 	connIndex       atomic.Uint32
 	connInfo        sync.Map
 
-	TCPListener, HTTPListener *net.TCPListener
+	TCPListener *net.TCPListener
+	// TLSListener is not a TCPListener
+	TLSListener  net.Listener
+	HTTPListener *net.TCPListener
 }
 
 type countingReader struct {
@@ -114,7 +121,7 @@ func (cr *countingReader) Read(p []byte) (n int, err error) {
 func New() *Server {
 	accessLog, _ := logging.NewFileLogger("")
 	errorLog, _ := logging.NewFileLogger("")
-	return &Server{
+	s := &Server{
 		bufPool: sync.Pool{
 			New: func() any {
 				buf := make([]byte, TCPBufferSize)
@@ -126,11 +133,38 @@ func New() *Server {
 		errorLog:  errorLog,
 		queue:     queue.New(0, 0),
 	}
+	s.tlsConfig = &tls.Config{GetCertificate: s.getTLSCertificate}
+	return s
 }
 
 func (s *Server) loadConfig(c *Config, openLog bool) error {
+	var tlsCertificate *tls.Certificate
+	serverStarted := s.TCPListener != nil || s.HTTPListener != nil || s.TLSListener != nil
+
 	if len(c.Upstreams) == 0 {
 		return fmt.Errorf("no upstream found")
+	}
+	if serverStarted {
+		switch {
+		case s.TLSListener == nil && c.Proxy.ListenTLS != "":
+			return fmt.Errorf("listen_tls cannot be enabled on reload; restart required")
+		case s.TLSListener != nil && c.Proxy.ListenTLS == "":
+			return fmt.Errorf("listen_tls cannot be disabled on reload; restart required")
+		}
+	}
+	if c.Proxy.ListenTLS == "" {
+		if c.Proxy.TLSCertFile != "" || c.Proxy.TLSKeyFile != "" {
+			return fmt.Errorf("tls_cert_file and tls_key_file require listen_tls")
+		}
+	} else {
+		if c.Proxy.TLSCertFile == "" || c.Proxy.TLSKeyFile == "" {
+			return fmt.Errorf("listen_tls requires tls_cert_file and tls_key_file")
+		}
+		cert, err := tls.LoadX509KeyPair(c.Proxy.TLSCertFile, c.Proxy.TLSKeyFile)
+		if err != nil {
+			return fmt.Errorf("load tls certificate: %w", err)
+		}
+		tlsCertificate = &cert
 	}
 
 	s.queue.SetMax(c.Proxy.MaxActiveConns, c.Proxy.MaxQueuedConns)
@@ -157,6 +191,9 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 	if s.ListenAddr == "" {
 		s.ListenAddr = c.Proxy.Listen
 	}
+	if s.TLSListenAddr == "" {
+		s.TLSListenAddr = c.Proxy.ListenTLS
+	}
 	if s.HTTPListenAddr == "" {
 		s.HTTPListenAddr = c.Proxy.ListenHTTP
 	}
@@ -171,7 +208,17 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 	s.Motd = c.Proxy.Motd
 	s.modules = modules
 	s.proxyProtocol = proxyProtocol
+	s.tlsCertificate = tlsCertificate
 	return nil
+}
+
+func (s *Server) getTLSCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	s.reloadLock.RLock()
+	defer s.reloadLock.RUnlock()
+	if s.tlsCertificate == nil {
+		return nil, fmt.Errorf("tls certificate is not configured")
+	}
+	return s.tlsCertificate, nil
 }
 
 func (s *Server) listAllModules(downConn net.Conn) error {
@@ -195,7 +242,7 @@ func (s *Server) listAllModules(downConn net.Conn) error {
 	return err
 }
 
-func (s *Server) relay(ctx context.Context, index uint32, downConn *net.TCPConn) error {
+func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) error {
 	defer downConn.Close()
 
 	info := ConnInfo{
@@ -390,7 +437,9 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn *net.TCPConn)
 		_ = upConn.SetLinger(0)
 		_ = upConn.CloseRead()
 	case <-sentClosed:
-		_ = downConn.CloseRead()
+		if closeReader, ok := downConn.(interface{ CloseRead() error }); ok {
+			_ = closeReader.CloseRead()
+		}
 	}
 
 	sentBytes := info.SentBytes.Load()
@@ -485,25 +534,48 @@ func (s *Server) Listen() error {
 	s.ListenAddr = l1.Addr().String()
 	log.Printf("[INFO] Rsync proxy listening on %s", s.ListenAddr)
 
+	var lTLS net.Listener
+	if s.TLSListenAddr != "" {
+		lTLS, err = net.Listen("tcp", s.TLSListenAddr)
+		if err != nil {
+			_ = l1.Close()
+			return fmt.Errorf("create tls listener: %w", err)
+		}
+		s.TLSListenAddr = lTLS.Addr().String()
+		log.Printf("[INFO] Rsync TLS proxy listening on %s", s.TLSListenAddr)
+		lTLS = tls.NewListener(lTLS, s.tlsConfig)
+	}
+
 	l2, err := net.Listen("tcp", s.HTTPListenAddr)
 	if err != nil {
-		l1.Close()
+		_ = l1.Close()
+		if lTLS != nil {
+			_ = lTLS.Close()
+		}
 		return fmt.Errorf("create http listener: %w", err)
 	}
 	s.HTTPListenAddr = l2.Addr().String()
 	log.Printf("[INFO] HTTP server listening on %s", s.HTTPListenAddr)
 
 	s.TCPListener = l1.(*net.TCPListener)
+	s.TLSListener = lTLS
 	s.HTTPListener = l2.(*net.TCPListener)
 	return nil
 }
 
 func (s *Server) Close() {
-	_ = s.TCPListener.Close()
-	_ = s.HTTPListener.Close()
+	if s.TCPListener != nil {
+		_ = s.TCPListener.Close()
+	}
+	if s.TLSListener != nil {
+		_ = s.TLSListener.Close()
+	}
+	if s.HTTPListener != nil {
+		_ = s.HTTPListener.Close()
+	}
 }
 
-func (s *Server) handleConn(ctx context.Context, conn *net.TCPConn) {
+func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	s.activeConnCount.Add(1)
 	defer s.activeConnCount.Add(-1)
 	connIndex := s.connIndex.Add(1)
@@ -511,6 +583,19 @@ func (s *Server) handleConn(ctx context.Context, conn *net.TCPConn) {
 	err := s.relay(ctx, connIndex, conn)
 	if err != nil {
 		s.errorLog.F("handleConn: %s", err)
+	}
+}
+
+func (s *Server) runRsyncServer(ctx context.Context, listener net.Listener, acceptErr string) error {
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			return fmt.Errorf("%s: %w", acceptErr, err)
+		}
+		go s.handleConn(ctx, conn)
 	}
 }
 
@@ -528,21 +613,25 @@ func (s *Server) Run() error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	go func() {
+		err := s.runRsyncServer(ctx, s.TCPListener, "accept rsync connection")
+		if err != nil {
+			errC <- err
+		}
+	}()
+	if s.TLSListener != nil {
+		go func() {
+			err := s.runRsyncServer(ctx, s.TLSListener, "accept tls rsync connection")
+			if err != nil {
+				errC <- err
+			}
+		}()
+	}
 
 	for {
-		select {
-		case err := <-errC:
-			return err
-		default:
-		}
-
-		conn, err := s.TCPListener.AcceptTCP()
+		err := <-errC
 		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
-				return nil
-			}
-			return fmt.Errorf("accept rsync connection: %w", err)
+			return err
 		}
-		go s.handleConn(ctx, conn)
 	}
 }

@@ -35,7 +35,9 @@ cp config.example.toml /etc/rsync-proxy/config.toml
 vim /etc/rsync-proxy/config.toml  # 根据实际情况修改配置
 ```
 
-注意：由于技术原因，`listen` 和 `listen_http` 在重新载入配置文件时不会更新。如果需要更新这些设置，请重启进程。
+注意：由于技术原因，`listen`、`listen_tls` 和 `listen_http` 在重新载入配置文件时不会更新。如果需要更新这些设置，请重启进程。
+
+如果配置了 `listen_tls`、`tls_cert_file` 和 `tls_key_file`，rsync-proxy 会额外开启一个 TLS rsync 监听端口，与明文 `listen` 共存。重新载入配置时会自动重读证书和私钥，新连接会立即使用新证书，已有连接不受影响。
 
 ### 创建用户与 systemd service
 
