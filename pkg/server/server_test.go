@@ -92,7 +92,7 @@ func TestMotdFromServer(t *testing.T) {
 	defer fakeRsync.Close()
 
 	srv.modules = map[string][]Target{
-		"fake": []Target{{Addr: fakeRsync.Listener.Addr().String()}},
+		"fake": {{Addr: fakeRsync.Listener.Addr().String()}},
 	}
 
 	r := require.New(t)
@@ -134,7 +134,7 @@ func TestClientReadTimeout(t *testing.T) {
 	defer fakeRsync.Close()
 
 	srv.modules = map[string][]Target{
-		"fake": []Target{{Addr: fakeRsync.Listener.Addr().String()}},
+		"fake": {{Addr: fakeRsync.Listener.Addr().String()}},
 	}
 
 	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())
@@ -191,7 +191,7 @@ func TestTLSRsyncListener(t *testing.T) {
 	defer fakeRsync.Close()
 
 	srv.modules = map[string][]Target{
-		"fake": []Target{{Addr: fakeRsync.Listener.Addr().String()}},
+		"fake": {{Addr: fakeRsync.Listener.Addr().String()}},
 	}
 
 	pool := x509.NewCertPool()
@@ -306,7 +306,7 @@ func TestStatusIncludesSelectedUpstream(t *testing.T) {
 
 	upstreamAddr = fakeRsync.Listener.Addr().String()
 	srv.modules = map[string][]Target{
-		"fake": []Target{{Addr: upstreamAddr}},
+		"fake": {{Addr: upstreamAddr}},
 	}
 
 	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())

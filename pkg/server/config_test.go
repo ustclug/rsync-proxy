@@ -26,10 +26,10 @@ modules = ["bar2"]
 	err := s.ReadConfig(strings.NewReader(configContent), true)
 	require.NoError(t, err, "load config")
 	expectedMods := map[string][]Target{
-		"foo1": []Target{{Addr: "127.0.0.1:1234", UseProxyProtocol: false}},
-		"foo2": []Target{{Addr: "127.0.0.1:1234", UseProxyProtocol: false}},
-		"bar1": []Target{{Addr: "127.0.0.1:1235", UseProxyProtocol: false}},
-		"bar2": []Target{{Addr: "example.com:1235", UseProxyProtocol: false}},
+		"foo1": {{Addr: "127.0.0.1:1234", UseProxyProtocol: false}},
+		"foo2": {{Addr: "127.0.0.1:1234", UseProxyProtocol: false}},
+		"bar1": {{Addr: "127.0.0.1:1235", UseProxyProtocol: false}},
+		"bar2": {{Addr: "example.com:1235", UseProxyProtocol: false}},
 	}
 	assert.Equal(t, expectedMods, s.modules, "wrong modules")
 }
