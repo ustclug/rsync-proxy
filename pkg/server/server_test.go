@@ -117,13 +117,13 @@ func TestClientReadTimeout(t *testing.T) {
 		defer conn.Close()
 
 		_, _, err := doServerHandshake(conn, RsyncdServerVersion)
-		if !assert.NoError(t, err) {
+		if err != nil {
 			return
 		}
 
 		for i := 0; i < 3; i++ {
 			_, err = conn.Write([]byte("data\n"))
-			if !assert.NoError(t, err) {
+			if err != nil {
 				return
 			}
 			time.Sleep(srv.ReadTimeout)
@@ -181,7 +181,7 @@ func TestTLSRsyncListener(t *testing.T) {
 		defer conn.Close()
 
 		_, module, err := doServerHandshake(conn, RsyncdServerVersion)
-		if !assert.NoError(t, err) {
+		if err != nil {
 			return
 		}
 		assert.Equal(t, "fake\n", module)

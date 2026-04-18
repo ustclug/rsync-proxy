@@ -185,7 +185,7 @@ func TestReloadTLSCertificateE2E(t *testing.T) {
 	assert.Contains(t, reloadOutput.String(), "Successfully reloaded")
 
 	_, err = newRsyncSSLCommand(firstCert.certPath, getRsyncTLSPath(proxy, "/")).CombinedOutput()
-	assert.Error(t, err)
+	require.Error(t, err)
 
 	outputBytes, err = newRsyncSSLCommand(secondCert.certPath, getRsyncTLSPath(proxy, "/")).CombinedOutput()
 	if err != nil {

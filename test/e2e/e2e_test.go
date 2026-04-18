@@ -125,7 +125,7 @@ func TestReloadConfigWithDuplicatedModules(t *testing.T) {
 
 	var reloadOutput bytes.Buffer
 	err = cmd.SendReloadRequest(proxy.HTTPListenAddr, &reloadOutput, &reloadOutput)
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Contains(t, reloadOutput.String(), "Failed to reload config")
 }
 
