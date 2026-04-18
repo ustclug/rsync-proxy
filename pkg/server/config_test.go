@@ -1,9 +1,11 @@
 package server
 
 import (
-	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestReadConfig(t *testing.T) {
@@ -22,18 +24,14 @@ address = "example.com:1235"
 modules = ["bar2"]
 `
 	err := s.ReadConfig(strings.NewReader(configContent), true)
-	if err != nil {
-		t.Fatalf("Load config: %s", err)
-	}
+	require.NoError(t, err)
 	expectedMods := map[string]string{
 		"foo1": "127.0.0.1:1234",
 		"foo2": "127.0.0.1:1234",
 		"bar1": "127.0.0.1:1235",
 		"bar2": "example.com:1235",
 	}
-	if !reflect.DeepEqual(expectedMods, s.modules) {
-		t.Errorf("Wrong modules\nExpected: %#v\nGot: %#v\n", expectedMods, s.modules)
-	}
+	assert.Equal(t, expectedMods, s.modules)
 }
 
 func TestDuplicatedModulesInConfig(t *testing.T) {
@@ -48,12 +46,8 @@ address = "127.0.0.1:1235"
 modules = ["foo1"]
 `
 	err := s.ReadConfig(strings.NewReader(configContent), true)
-	if err == nil {
-		t.Fatalf("Unexpected success")
-	}
-	if !strings.Contains(err.Error(), "duplicate module name") {
-		t.Errorf("Unexpected error. Got: %s", err)
-	}
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate module name")
 }
 
 func TestLoadMotdInConfig(t *testing.T) {
@@ -67,13 +61,9 @@ address = "127.0.0.1:1234"
 modules = ["foo1", "foo2"]
 `
 	err := s.ReadConfig(strings.NewReader(configContent), true)
-	if err != nil {
-		t.Fatalf("Load config: %s", err)
-	}
+	require.NoError(t, err)
 	expectedMotd := "Proudly served by rsync-proxy\ntest newline"
-	if !reflect.DeepEqual(expectedMotd, s.Motd) {
-		t.Errorf("Wrong motd\nExpected: %#v\nGot: %#v\n", expectedMotd, s.modules)
-	}
+	assert.Equal(t, expectedMotd, s.Motd)
 }
 
 func TestLoadTLSConfig(t *testing.T) {
@@ -91,15 +81,9 @@ address = "127.0.0.1:1234"
 modules = ["foo1"]
 `
 	err := s.ReadConfig(strings.NewReader(configContent), true)
-	if err != nil {
-		t.Fatalf("Load config: %s", err)
-	}
-	if s.TLSListenAddr != "127.0.0.1:8731" {
-		t.Fatalf("Wrong tls listen addr: %s", s.TLSListenAddr)
-	}
-	if s.tlsCertificate == nil {
-		t.Fatal("TLS certificate was not loaded")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "127.0.0.1:8731", s.TLSListenAddr)
+	assert.NotNil(t, s.tlsCertificate)
 }
 
 func TestLoadTLSConfigWithoutKeyPair(t *testing.T) {
@@ -113,10 +97,6 @@ address = "127.0.0.1:1234"
 modules = ["foo1"]
 `
 	err := s.ReadConfig(strings.NewReader(configContent), true)
-	if err == nil {
-		t.Fatal("Unexpected success")
-	}
-	if !strings.Contains(err.Error(), "listen_tls requires tls_cert_file and tls_key_file") {
-		t.Fatalf("Unexpected error. Got: %s", err)
-	}
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "listen_tls requires tls_cert_file and tls_key_file")
 }

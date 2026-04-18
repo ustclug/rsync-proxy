@@ -14,6 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/ustclug/rsync-proxy/pkg/server"
 )
 
@@ -104,36 +107,26 @@ func startProxy(t *testing.T, overrides ...func(*server.Server)) *server.Server 
 	}
 
 	err := s.ReadConfigFromFile(true)
-	if err != nil {
-		t.Fatalf("Failed to load config: %v", err)
-	}
+	require.NoError(t, err)
 	s.ListenAddr = LOCAL_BIND_ADDR
 	s.HTTPListenAddr = LOCAL_BIND_ADDR
 
 	err = s.Listen()
-	if err != nil {
-		t.Fatalf("Failed to listen: %v", err)
-	}
+	require.NoError(t, err)
 
 	go func() {
 		err := s.Run()
-		if err != nil {
-			t.Errorf("Failed to run: %v", err)
-		}
+		assert.NoError(t, err)
 	}()
 
 	_, port, err := net.SplitHostPort(s.ListenAddr)
-	if err != nil {
-		t.Fatalf("Failed to get port: %v", err)
-	}
+	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
 
 	err = ensureTCPPortIsReady(ctx, port)
-	if err != nil {
-		t.Fatalf("Failed to wait for TCP port to be ready: %v", err)
-	}
+	require.NoError(t, err)
 
 	t.Cleanup(func() {
 		s.Close()

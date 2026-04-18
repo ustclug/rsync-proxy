@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ustclug/rsync-proxy/cmd"
@@ -34,14 +35,10 @@ func writeTestTLSCert(t *testing.T, dir, name, commonName string) tlsCertFiles {
 	t.Helper()
 
 	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("generate private key: %v", err)
-	}
+	require.NoError(t, err)
 
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		t.Fatalf("generate serial number: %v", err)
-	}
+	require.NoError(t, err)
 
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
@@ -58,15 +55,11 @@ func writeTestTLSCert(t *testing.T, dir, name, commonName string) tlsCertFiles {
 	}
 
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &privateKey.PublicKey, privateKey)
-	if err != nil {
-		t.Fatalf("create certificate: %v", err)
-	}
+	require.NoError(t, err)
 
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyDER, err := x509.MarshalECPrivateKey(privateKey)
-	if err != nil {
-		t.Fatalf("marshal private key: %v", err)
-	}
+	require.NoError(t, err)
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 
 	certPath := filepath.Join(dir, fmt.Sprintf("%s.crt", name))
@@ -144,7 +137,6 @@ func ensureTLSPortIsReady(t *testing.T, addr string) {
 }
 
 func TestTLSListModules(t *testing.T) {
-	r := require.New(t)
 	dir := t.TempDir()
 	tlsFiles := writeTestTLSCert(t, dir, "server", "rsync-proxy-e2e")
 	configPath := filepath.Join(dir, "config.toml")
@@ -159,14 +151,13 @@ func TestTLSListModules(t *testing.T) {
 	outputBytes, err := newRsyncSSLCommand(tlsFiles.certPath, getRsyncTLSPath(proxy, "/")).CombinedOutput()
 	if err != nil {
 		t.Log(string(outputBytes))
-		r.NoError(err)
+		require.NoError(t, err)
 	}
 
-	r.Equal("bar\nfoo\n", normalizeRsyncSSLOutput(outputBytes))
+	assert.Equal(t, "bar\nfoo\n", normalizeRsyncSSLOutput(outputBytes))
 }
 
 func TestReloadTLSCertificateE2E(t *testing.T) {
-	r := require.New(t)
 	dir := t.TempDir()
 	firstCert := writeTestTLSCert(t, dir, "first", "first-cert")
 	secondCert := writeTestTLSCert(t, dir, "second", "second-cert")
@@ -182,24 +173,24 @@ func TestReloadTLSCertificateE2E(t *testing.T) {
 	outputBytes, err := newRsyncSSLCommand(firstCert.certPath, getRsyncTLSPath(proxy, "/")).CombinedOutput()
 	if err != nil {
 		t.Log(string(outputBytes))
-		r.NoError(err)
+		require.NoError(t, err)
 	}
-	r.Equal("bar\nfoo\n", normalizeRsyncSSLOutput(outputBytes))
+	assert.Equal(t, "bar\nfoo\n", normalizeRsyncSSLOutput(outputBytes))
 
 	writeProxyTLSConfig(t, configPath, secondCert)
 
 	var reloadOutput bytes.Buffer
 	err = cmd.SendReloadRequest(proxy.HTTPListenAddr, &reloadOutput, &reloadOutput)
-	r.NoError(err)
-	r.Contains(reloadOutput.String(), "Successfully reloaded")
+	require.NoError(t, err)
+	assert.Contains(t, reloadOutput.String(), "Successfully reloaded")
 
 	_, err = newRsyncSSLCommand(firstCert.certPath, getRsyncTLSPath(proxy, "/")).CombinedOutput()
-	r.Error(err)
+	assert.Error(t, err)
 
 	outputBytes, err = newRsyncSSLCommand(secondCert.certPath, getRsyncTLSPath(proxy, "/")).CombinedOutput()
 	if err != nil {
 		t.Log(string(outputBytes))
-		r.NoError(err)
+		require.NoError(t, err)
 	}
-	r.Equal("bar\nfoo\n", normalizeRsyncSSLOutput(outputBytes))
+	assert.Equal(t, "bar\nfoo\n", normalizeRsyncSSLOutput(outputBytes))
 }

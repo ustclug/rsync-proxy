@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 type tlsCertFiles struct {
@@ -25,14 +27,10 @@ func writeTestTLSCert(t *testing.T, dir, name, commonName string) tlsCertFiles {
 	t.Helper()
 
 	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("generate private key: %v", err)
-	}
+	require.NoError(t, err)
 
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		t.Fatalf("generate serial number: %v", err)
-	}
+	require.NoError(t, err)
 
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
@@ -49,25 +47,17 @@ func writeTestTLSCert(t *testing.T, dir, name, commonName string) tlsCertFiles {
 	}
 
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &privateKey.PublicKey, privateKey)
-	if err != nil {
-		t.Fatalf("create certificate: %v", err)
-	}
+	require.NoError(t, err)
 
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyDER, err := x509.MarshalECPrivateKey(privateKey)
-	if err != nil {
-		t.Fatalf("marshal private key: %v", err)
-	}
+	require.NoError(t, err)
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 
 	certPath := filepath.Join(dir, fmt.Sprintf("%s.crt", name))
 	keyPath := filepath.Join(dir, fmt.Sprintf("%s.key", name))
-	if err := os.WriteFile(certPath, certPEM, 0600); err != nil {
-		t.Fatalf("write certificate: %v", err)
-	}
-	if err := os.WriteFile(keyPath, keyPEM, 0600); err != nil {
-		t.Fatalf("write private key: %v", err)
-	}
+	require.NoError(t, os.WriteFile(certPath, certPEM, 0600))
+	require.NoError(t, os.WriteFile(keyPath, keyPEM, 0600))
 
 	return tlsCertFiles{
 		certPath:   certPath,

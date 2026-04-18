@@ -85,9 +85,7 @@ func TestMotdFromServer(t *testing.T) {
 		defer conn.Close()
 
 		_, _, err := doServerHandshake(conn, append(RsyncdServerVersion, []byte(serverMotd)...))
-		if err != nil {
-			t.Errorf("server handshake: %v", err)
-		}
+		assert.NoError(t, err)
 	})
 	fakeRsync.Start()
 	defer fakeRsync.Close()
@@ -96,20 +94,18 @@ func TestMotdFromServer(t *testing.T) {
 		"fake": fakeRsync.Listener.Addr().String(),
 	}
 
-	r := require.New(t)
-
 	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())
-	r.NoError(err)
+	require.NoError(t, err)
 	conn := rsync.NewConn(rawConn)
 	defer conn.Close()
 
 	_, err = doClientHandshake(conn, RsyncdServerVersion, "fake")
-	r.NoError(err)
+	require.NoError(t, err)
 
 	allData, err := io.ReadAll(conn)
-	r.NoError(err)
+	require.NoError(t, err)
 
-	r.Equal(proxyMotd+"\n"+serverMotd, string(allData))
+	assert.Equal(t, proxyMotd+"\n"+serverMotd, string(allData))
 }
 
 // See also: https://github.com/ustclug/rsync-proxy/commit/d581c18dab8008c5bc9c1a5d667b49d67a4edfed
@@ -121,15 +117,13 @@ func TestClientReadTimeout(t *testing.T) {
 		defer conn.Close()
 
 		_, _, err := doServerHandshake(conn, RsyncdServerVersion)
-		if err != nil {
-			t.Errorf("server handshake: %v", err)
+		if !assert.NoError(t, err) {
 			return
 		}
 
 		for i := 0; i < 3; i++ {
 			_, err = conn.Write([]byte("data\n"))
-			if err != nil {
-				t.Errorf("write data: %v", err)
+			if !assert.NoError(t, err) {
 				return
 			}
 			time.Sleep(srv.ReadTimeout)
@@ -142,21 +136,19 @@ func TestClientReadTimeout(t *testing.T) {
 		"fake": fakeRsync.Listener.Addr().String(),
 	}
 
-	r := require.New(t)
-
 	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())
-	r.NoError(err)
+	require.NoError(t, err)
 	conn := rsync.NewConn(rawConn)
 	defer conn.Close()
 
 	_, err = doClientHandshake(conn, RsyncdServerVersion, "fake")
-	r.NoError(err)
+	require.NoError(t, err)
 
 	allData, err := io.ReadAll(conn)
-	r.NoError(err)
+	require.NoError(t, err)
 
 	expected := strings.Repeat("data\n", 3)
-	r.Equal(expected, string(allData))
+	assert.Equal(t, expected, string(allData))
 }
 
 func TestTLSRsyncListener(t *testing.T) {
@@ -189,8 +181,7 @@ func TestTLSRsyncListener(t *testing.T) {
 		defer conn.Close()
 
 		_, module, err := doServerHandshake(conn, RsyncdServerVersion)
-		if err != nil {
-			t.Errorf("server handshake: %v", err)
+		if !assert.NoError(t, err) {
 			return
 		}
 		assert.Equal(t, "fake\n", module)
@@ -270,9 +261,9 @@ modules = ["foo"]
 		return state.PeerCertificates[0].Subject.CommonName
 	}
 
-	require.Equal(t, firstCert.commonName, getCommonName())
+	assert.Equal(t, firstCert.commonName, getCommonName())
 
 	writeConfig(secondCert)
 	require.NoError(t, srv.ReadConfigFromFile(true))
-	require.Equal(t, secondCert.commonName, getCommonName())
+	assert.Equal(t, secondCert.commonName, getCommonName())
 }

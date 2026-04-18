@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ustclug/rsync-proxy/cmd"
@@ -15,51 +16,45 @@ import (
 func TestListModules(t *testing.T) {
 	proxy := startProxy(t)
 
-	r := require.New(t)
-
 	outputBytes, err := newRsyncCommand(getRsyncPath(proxy, "/")).CombinedOutput()
-	r.NoError(err)
+	require.NoError(t, err)
 
 	output := string(outputBytes)
 	expectedOutput := "bar\nfoo\n"
-	r.Equal(expectedOutput, output)
+	assert.Equal(t, expectedOutput, output)
 }
 
 func TestSyncSingleFile(t *testing.T) {
 	proxy := startProxy(t)
 
-	r := require.New(t)
-
 	dst, err := os.CreateTemp("", "rsync-proxy-e2e-*")
-	r.NoError(err)
+	require.NoError(t, err)
 	_ = dst.Close() // we won't write to it here
 	defer os.Remove(dst.Name())
 
 	outputBytes, err := newRsyncCommand(getRsyncPath(proxy, "/bar/v3.2/data"), dst.Name()).CombinedOutput()
 	if err != nil {
 		t.Log(string(outputBytes))
-		r.NoError(err)
+		require.NoError(t, err)
 	}
 
 	got, err := os.ReadFile(dst.Name())
-	r.NoError(err)
+	require.NoError(t, err)
 
-	r.Equal("3.2", string(got))
+	assert.Equal(t, "3.2", string(got))
 }
 
 func TestSyncDir(t *testing.T) {
 	proxy := startProxy(t)
 
-	r := require.New(t)
-
 	dir, err := os.MkdirTemp("", "rsync-proxy-e2e-*")
-	r.NoError(err)
+	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 
 	outputBytes, err := newRsyncCommand("-a", getRsyncPath(proxy, "/foo/v3.0/"), dir).CombinedOutput()
 	if err != nil {
 		t.Log(string(outputBytes))
-		r.NoError(err)
+		require.NoError(t, err)
 	}
 
 	names := []string{"data1", "data2"}
@@ -68,98 +63,95 @@ func TestSyncDir(t *testing.T) {
 		fp := filepath.Join(dir, name)
 		expected := data[i]
 		got, err := os.ReadFile(fp)
-		r.NoError(err)
-		r.Equal(string(expected), string(got))
+		require.NoError(t, err)
+		assert.Equal(t, string(expected), string(got))
 	}
 }
 
 func TestReloadConfig(t *testing.T) {
-	r := require.New(t)
 	dst, err := os.CreateTemp("", "rsync-proxy-e2e-*")
-	r.NoError(err)
-	r.NoError(dst.Close())
+	require.NoError(t, err)
+	require.NoError(t, dst.Close())
 
-	r.NoError(copyFile(getProxyConfigPath("config1.toml"), dst.Name()))
+	require.NoError(t, copyFile(getProxyConfigPath("config1.toml"), dst.Name()))
 
 	proxy := startProxy(t, func(s *server.Server) {
 		s.ConfigPath = dst.Name()
 	})
 
-	r.NoError(copyFile(getProxyConfigPath("config2.toml"), dst.Name()))
+	require.NoError(t, copyFile(getProxyConfigPath("config2.toml"), dst.Name()))
 
 	var reloadOutput bytes.Buffer
 	err = cmd.SendReloadRequest(proxy.HTTPListenAddr, &reloadOutput, &reloadOutput)
-	r.NoError(err)
-	r.Contains(reloadOutput.String(), "Successfully reloaded")
+	require.NoError(t, err)
+	assert.Contains(t, reloadOutput.String(), "Successfully reloaded")
 
 	outputBytes, err := newRsyncCommand(getRsyncPath(proxy, "/")).CombinedOutput()
 	if err != nil {
 		t.Log(string(outputBytes))
-		r.NoError(err)
+		require.NoError(t, err)
 	}
 
-	r.Equal("bar\nbaz\nfoo\n", string(outputBytes))
+	assert.Equal(t, "bar\nbaz\nfoo\n", string(outputBytes))
 
 	tmpFile, err := os.CreateTemp("", "rsync-proxy-e2e-*")
-	r.NoError(err)
-	r.NoError(tmpFile.Close())
+	require.NoError(t, err)
+	require.NoError(t, tmpFile.Close())
 	defer os.Remove(tmpFile.Name())
 
 	outputBytes, err = newRsyncCommand(getRsyncPath(proxy, "/baz/v3.4/data"), tmpFile.Name()).CombinedOutput()
 	if err != nil {
 		t.Log(string(outputBytes))
-		r.NoError(err)
+		require.NoError(t, err)
 	}
 
 	got, err := os.ReadFile(tmpFile.Name())
-	r.NoError(err)
-	r.Equal("3.4", string(got))
+	require.NoError(t, err)
+	assert.Equal(t, "3.4", string(got))
 }
 
 func TestReloadConfigWithDuplicatedModules(t *testing.T) {
-	r := require.New(t)
 	dst, err := os.CreateTemp("", "rsync-proxy-e2e-*")
-	r.NoError(err)
-	r.NoError(dst.Close())
+	require.NoError(t, err)
+	require.NoError(t, dst.Close())
 
-	r.NoError(copyFile(getProxyConfigPath("config1.toml"), dst.Name()))
+	require.NoError(t, copyFile(getProxyConfigPath("config1.toml"), dst.Name()))
 
 	proxy := startProxy(t, func(s *server.Server) {
 		s.ConfigPath = dst.Name()
 	})
 
-	r.NoError(copyFile(getProxyConfigPath("config3.toml"), dst.Name()))
+	require.NoError(t, copyFile(getProxyConfigPath("config3.toml"), dst.Name()))
 
 	var reloadOutput bytes.Buffer
 	err = cmd.SendReloadRequest(proxy.HTTPListenAddr, &reloadOutput, &reloadOutput)
-	r.Error(err)
-	r.Contains(reloadOutput.String(), "Failed to reload config")
+	assert.Error(t, err)
+	assert.Contains(t, reloadOutput.String(), "Failed to reload config")
 }
 
 func TestProxyProtocol(t *testing.T) {
-	r := require.New(t)
 	dst, err := os.CreateTemp("", "rsync-proxy-e2e-*")
-	r.NoError(err)
-	r.NoError(dst.Close())
+	require.NoError(t, err)
+	require.NoError(t, dst.Close())
 
-	r.NoError(copyFile(getProxyConfigPath("config4.toml"), dst.Name()))
+	require.NoError(t, copyFile(getProxyConfigPath("config4.toml"), dst.Name()))
 
 	proxy := startProxy(t, func(s *server.Server) {
 		s.ConfigPath = dst.Name()
 	})
 
 	tmpFile, err := os.CreateTemp("", "rsync-proxy-e2e-*")
-	r.NoError(err)
-	r.NoError(tmpFile.Close())
+	require.NoError(t, err)
+	require.NoError(t, tmpFile.Close())
 	defer os.Remove(tmpFile.Name())
 
 	outputBytes, err := newRsyncCommand(getRsyncPath(proxy, "/pro/v3.5/data"), tmpFile.Name()).CombinedOutput()
 	if err != nil {
 		t.Log(string(outputBytes))
-		r.NoError(err)
+		require.NoError(t, err)
 	}
 
 	got, err := os.ReadFile(tmpFile.Name())
-	r.NoError(err)
-	r.Equal("3.5", string(got))
+	require.NoError(t, err)
+	assert.Equal(t, "3.5", string(got))
 }
