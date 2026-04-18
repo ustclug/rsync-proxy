@@ -25,11 +25,11 @@ modules = ["bar2"]
 `
 	err := s.ReadConfig(strings.NewReader(configContent), true)
 	require.NoError(t, err, "load config")
-	expectedMods := map[string]string{
-		"foo1": "127.0.0.1:1234",
-		"foo2": "127.0.0.1:1234",
-		"bar1": "127.0.0.1:1235",
-		"bar2": "example.com:1235",
+	expectedMods := map[string][]Target{
+		"foo1": {{Addr: "127.0.0.1:1234", UseProxyProtocol: false}},
+		"foo2": {{Addr: "127.0.0.1:1234", UseProxyProtocol: false}},
+		"bar1": {{Addr: "127.0.0.1:1235", UseProxyProtocol: false}},
+		"bar2": {{Addr: "example.com:1235", UseProxyProtocol: false}},
 	}
 	assert.Equal(t, expectedMods, s.modules, "wrong modules")
 }
@@ -46,8 +46,11 @@ address = "127.0.0.1:1235"
 modules = ["foo1"]
 `
 	err := s.ReadConfig(strings.NewReader(configContent), true)
-	require.Error(t, err, "unexpected success")
-	assert.Contains(t, err.Error(), "duplicate module name", "unexpected error message")
+	require.NoError(t, err, "load config")
+	assert.Equal(t, []Target{
+		{Addr: "127.0.0.1:1234", UseProxyProtocol: false},
+		{Addr: "127.0.0.1:1235", UseProxyProtocol: false},
+	}, s.modules["foo1"], "wrong targets for duplicated module")
 }
 
 func TestLoadMotdInConfig(t *testing.T) {

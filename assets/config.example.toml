@@ -19,7 +19,8 @@ modules = ["foo"]
 
 [upstreams.u2]
 address = "192.168.0.10:1235"
-modules = ["bar"]
+# Modules that multiple upstreams provide would be load-balanced by client IP.
+modules = ["bar", "foo"]
 
 [upstreams.u3]
 address = "rsync.example.internal:1235"

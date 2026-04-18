@@ -2,6 +2,8 @@ package e2e
 
 import (
 	"bytes"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -132,8 +134,31 @@ func TestReloadConfigWithDuplicatedModules(t *testing.T) {
 
 	var reloadOutput bytes.Buffer
 	err = cmd.SendReloadRequest(proxy.HTTPListenAddr, &reloadOutput, &reloadOutput)
-	r.Error(err)
-	r.Contains(reloadOutput.String(), "Failed to reload config")
+	r.NoError(err)
+	r.Contains(reloadOutput.String(), "Successfully reloaded")
+
+	outputBytes, err := newRsyncCommand(getRsyncPath(proxy, "/")).CombinedOutput()
+	if err != nil {
+		t.Log(string(outputBytes))
+		r.NoError(err)
+	}
+
+	r.Equal("bar\nfoo\n", string(outputBytes))
+
+	tmpFile, err := os.CreateTemp("", "rsync-proxy-e2e-*")
+	r.NoError(err)
+	r.NoError(tmpFile.Close())
+	defer os.Remove(tmpFile.Name())
+
+	outputBytes, err = newRsyncCommand(getRsyncPath(proxy, "/bar/v3.2/data"), tmpFile.Name()).CombinedOutput()
+	if err != nil {
+		t.Log(string(outputBytes))
+		r.NoError(err)
+	}
+
+	got, err := os.ReadFile(tmpFile.Name())
+	r.NoError(err)
+	r.Equal("3.2", string(got))
 }
 
 func TestProxyProtocol(t *testing.T) {
@@ -162,4 +187,48 @@ func TestProxyProtocol(t *testing.T) {
 	got, err := os.ReadFile(tmpFile.Name())
 	r.NoError(err)
 	r.Equal("3.5", string(got))
+}
+
+func TestSharedModuleUsesClientIPSelection(t *testing.T) {
+	r := require.New(t)
+	dst, err := os.CreateTemp("", "rsync-proxy-e2e-*")
+	r.NoError(err)
+	r.NoError(dst.Close())
+	defer os.Remove(dst.Name())
+
+	r.NoError(copyFile(getProxyConfigPath("config5.toml"), dst.Name()))
+
+	proxy := startProxy(t, func(s *server.Server) {
+		s.ConfigPath = dst.Name()
+	})
+
+	tryFetch := func(localIP string) string {
+		tmpFile, err := os.CreateTemp("", "rsync-proxy-e2e-*")
+		r.NoError(err)
+		r.NoError(tmpFile.Close())
+		defer os.Remove(tmpFile.Name())
+
+		cmd := newRsyncCommand(getRsyncPath(proxy, "/foo/v3.1/data"), tmpFile.Name())
+		host, port, err := net.SplitHostPort(proxy.ListenAddr)
+		r.NoError(err)
+		cmd.Env = append(os.Environ(), fmt.Sprintf("RSYNC_CONNECT_PROG=nc -s %s %s %s", localIP, host, port))
+		outputBytes, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Log(string(outputBytes))
+			r.NoError(err)
+		}
+
+		got, err := os.ReadFile(tmpFile.Name())
+		r.NoError(err)
+		return string(got)
+	}
+
+	results := map[string]bool{}
+	for _, localIP := range []string{"127.0.0.1", "127.0.0.2"} {
+		results[tryFetch(localIP)] = true
+	}
+
+	r.Len(results, 2)
+	r.True(results["3.1"])
+	r.True(results["3.1-via-bar"])
 }

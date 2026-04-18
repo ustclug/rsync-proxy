@@ -58,6 +58,10 @@ func testMain(m *testing.M) (int, error) {
 			name: "bar.conf",
 		},
 		{
+			port: 1237,
+			name: "foo-bar.conf",
+		},
+		{
 			port: 1236,
 			name: "proxyprotocol.conf",
 		},
@@ -216,6 +220,7 @@ func setupDataDirs() error {
 		"/tmp/rsync-proxy-e2e/foo/v3.0/data1": []byte("3.0.1"),
 		"/tmp/rsync-proxy-e2e/foo/v3.0/data2": []byte("3.0.2"),
 		"/tmp/rsync-proxy-e2e/foo/v3.1/data":  []byte("3.1"),
+		"/tmp/rsync-proxy-e2e/bar/v3.1/data":  []byte("3.1-via-bar"),
 		"/tmp/rsync-proxy-e2e/bar/v3.2/data":  []byte("3.2"),
 		"/tmp/rsync-proxy-e2e/bar/v3.3/data":  []byte("3.3"),
 		"/tmp/rsync-proxy-e2e/baz/v3.4/data":  []byte("3.4"),
