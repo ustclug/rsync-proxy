@@ -138,3 +138,26 @@ discover_modules = true
 		"foo": {{Addr: upstream.Listener.Addr().String(), UseProxyProtocol: false}},
 	}, s.modules)
 }
+
+func TestReadConfigDiscoversModulesWithMotd(t *testing.T) {
+	upstream := rsync.NewModuleListServerWithMotd([]string{"bar", "foo"}, []string{"Welcome", "Mirror notice"})
+	upstream.Start()
+	defer upstream.Close()
+
+	s := New()
+	s.ReadTimeout = time.Second
+	s.WriteTimeout = time.Second
+	configContent := `
+[upstreams.u1]
+address = "` + upstream.Listener.Addr().String() + `"
+discover_modules = true
+`
+	err := s.ReadConfig(strings.NewReader(configContent), true)
+	require.NoError(t, err, "load config")
+	assert.Equal(t, map[string][]Target{
+		"bar": {{Addr: upstream.Listener.Addr().String(), UseProxyProtocol: false}},
+		"foo": {{Addr: upstream.Listener.Addr().String(), UseProxyProtocol: false}},
+	}, s.modules)
+	assert.NotContains(t, s.modules, "Welcome")
+	assert.NotContains(t, s.modules, "Mirror")
+}

@@ -46,6 +46,10 @@ func (r *Server) Close() {
 }
 
 func NewModuleListServer(modules []string) *Server {
+	return NewModuleListServerWithMotd(modules, nil)
+}
+
+func NewModuleListServerWithMotd(modules []string, motd []string) *Server {
 	return NewServer(func(conn *Conn) {
 		defer conn.Close()
 
@@ -53,6 +57,12 @@ func NewModuleListServer(modules []string) *Server {
 			return
 		}
 		_, _ = conn.Write([]byte("@RSYNCD: 32.0 sha512 sha256 sha1 md5 md4\n"))
+		if len(motd) > 0 {
+			for _, line := range motd {
+				_, _ = conn.Write([]byte(line + "\n"))
+			}
+			_, _ = conn.Write([]byte("\n"))
+		}
 
 		line, err := conn.ReadLine()
 		if err != nil || line != "\n" {

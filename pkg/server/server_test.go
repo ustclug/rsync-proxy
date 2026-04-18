@@ -387,3 +387,65 @@ discover_modules = true
 	assert.True(t, hasFoo)
 	assert.False(t, hasBar)
 }
+
+func TestListUpstreamModules(t *testing.T) {
+	srv := New()
+	srv.reloadLock.Lock()
+	srv.upstreams = []upstreamConfig{
+		{Name: "u1", Modules: []string{"foo", "bar"}},
+		{Name: "u2", Modules: []string{"baz"}},
+	}
+	srv.reloadLock.Unlock()
+
+	modules, err := srv.ListUpstreamModules("u1")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"bar", "foo"}, modules)
+
+	_, err = srv.ListUpstreamModules("missing")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown upstream")
+}
+
+func TestDiscoverModules(t *testing.T) {
+	upstream := rsync.NewModuleListServer([]string{"bar", "foo"})
+	upstream.Start()
+	defer upstream.Close()
+
+	srv := New()
+	srv.ReadTimeout = time.Second
+	srv.WriteTimeout = time.Second
+
+	modules, err := srv.DiscoverModules(upstream.Listener.Addr().String())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"bar", "foo"}, modules)
+}
+
+func TestDiscoverModulesFromProxyStyleListing(t *testing.T) {
+	upstream := rsync.NewServer(func(conn *rsync.Conn) {
+		defer conn.Close()
+
+		line, err := conn.ReadLine()
+		require.NoError(t, err)
+		require.Equal(t, string(RsyncdServerVersion), line)
+
+		_, err = conn.Write(RsyncdServerVersion)
+		require.NoError(t, err)
+
+		line, err = conn.ReadLine()
+		require.NoError(t, err)
+		require.Equal(t, "\n", line)
+
+		_, err = conn.Write([]byte("Served by rsync-proxy\n\nfoo\nbar\n@RSYNCD: EXIT\n"))
+		require.NoError(t, err)
+	})
+	upstream.Start()
+	defer upstream.Close()
+
+	srv := New()
+	srv.ReadTimeout = time.Second
+	srv.WriteTimeout = time.Second
+
+	modules, err := srv.DiscoverModules(upstream.Listener.Addr().String())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"bar", "foo"}, modules)
+}

@@ -213,7 +213,8 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 	if err != nil {
 		return err
 	}
-	modules := buildModuleTargets(upstreams, discoveredModules)
+	resolvedUpstreams := resolveUpstreams(upstreams, discoveredModules)
+	modules := buildModuleTargets(resolvedUpstreams)
 
 	s.reloadLock.Lock()
 	defer s.reloadLock.Unlock()
@@ -236,23 +237,61 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 	}
 	s.Motd = c.Proxy.Motd
 	s.modules = modules
-	s.upstreams = upstreams
+	s.upstreams = resolvedUpstreams
 	s.tlsCertificate = tlsCertificate
 	return nil
 }
 
-func buildModuleTargets(upstreams []upstreamConfig, discovered map[string][]string) map[string][]Target {
+func resolveUpstreams(upstreams []upstreamConfig, discovered map[string][]string) []upstreamConfig {
+	resolved := make([]upstreamConfig, 0, len(upstreams))
+	for _, upstream := range upstreams {
+		modules := append([]string(nil), upstream.Modules...)
+		if upstream.DiscoverModules {
+			modules = append([]string(nil), discovered[upstream.Name]...)
+		}
+		resolved = append(resolved, upstreamConfig{
+			Name:            upstream.Name,
+			Target:          upstream.Target,
+			Modules:         modules,
+			DiscoverModules: upstream.DiscoverModules,
+		})
+	}
+	return resolved
+}
+
+func buildModuleTargets(upstreams []upstreamConfig) map[string][]Target {
 	modules := map[string][]Target{}
 	for _, upstream := range upstreams {
-		moduleNames := upstream.Modules
-		if upstream.DiscoverModules {
-			moduleNames = discovered[upstream.Name]
-		}
-		for _, moduleName := range moduleNames {
+		for _, moduleName := range upstream.Modules {
 			modules[moduleName] = append(modules[moduleName], upstream.Target)
 		}
 	}
 	return modules
+}
+
+func (s *Server) ListUpstreamModules(name string) ([]string, error) {
+	s.reloadLock.RLock()
+	defer s.reloadLock.RUnlock()
+	for _, upstream := range s.upstreams {
+		if upstream.Name != name {
+			continue
+		}
+		modules := append([]string(nil), upstream.Modules...)
+		sort.Strings(modules)
+		return modules, nil
+	}
+	return nil, fmt.Errorf("unknown upstream: %s", name)
+}
+
+func (s *Server) DiscoverModules(addr string) ([]string, error) {
+	modules, err := s.discoverModulesFromUpstream(context.Background(), upstreamConfig{
+		Name:   addr,
+		Target: Target{Addr: addr},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return modules, nil
 }
 
 func (s *Server) discoverConfiguredModules(ctx context.Context, upstreams []upstreamConfig) (map[string][]string, error) {
@@ -300,6 +339,7 @@ func (s *Server) discoverModulesFromUpstream(ctx context.Context, upstream upstr
 	}
 
 	modules := make([]string, 0)
+	seenSeparator := false
 	for {
 		if s.ReadTimeout > 0 {
 			_ = conn.SetReadDeadline(time.Now().Add(s.ReadTimeout))
@@ -313,13 +353,21 @@ func (s *Server) discoverModulesFromUpstream(ctx context.Context, upstream upstr
 			break
 		}
 		if line == "" {
+			seenSeparator = true
 			continue
 		}
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
+
+		name := ""
+		if idx := strings.IndexByte(line, '\t'); idx >= 0 {
+			name = strings.TrimRight(line[:idx], " ")
+		} else if seenSeparator && !strings.ContainsAny(line, " \t") {
+			// rsync-proxy lists modules as bare names without comments.
+			name = line
+		}
+		if name == "" {
 			continue
 		}
-		modules = append(modules, fields[0])
+		modules = append(modules, name)
 	}
 	sort.Strings(modules)
 	return modules, nil
