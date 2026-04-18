@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -209,7 +208,7 @@ func TestSharedModuleUsesClientIPSelection(t *testing.T) {
 		r.NoError(tmpFile.Close())
 		defer os.Remove(tmpFile.Name())
 
-		cmd := exec.Command("rsync", getRsyncPath(proxy, "/foo/v3.1/data"), tmpFile.Name())
+		cmd := newRsyncCommand(getRsyncPath(proxy, "/foo/v3.1/data"), tmpFile.Name())
 		host, port, err := net.SplitHostPort(proxy.ListenAddr)
 		r.NoError(err)
 		cmd.Env = append(os.Environ(), fmt.Sprintf("RSYNC_CONNECT_PROG=nc -s %s %s %s", localIP, host, port))
