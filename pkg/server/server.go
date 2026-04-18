@@ -25,8 +25,7 @@ import (
 )
 
 const (
-	TCPBufferSize          = 256
-	moduleDiscoveryBufSize = 4096
+	TCPBufferSize = 256
 )
 
 var (
@@ -280,7 +279,7 @@ func (s *Server) discoverModulesFromUpstream(ctx context.Context, upstream upstr
 	}
 	defer conn.Close()
 
-	reader := bufio.NewReaderSize(conn, moduleDiscoveryBufSize)
+	reader := bufio.NewReaderSize(conn, TCPBufferSize)
 	if _, err := writeWithTimeout(conn, RsyncdServerVersion, s.WriteTimeout); err != nil {
 		return nil, fmt.Errorf("send version: %w", err)
 	}
