@@ -232,3 +232,18 @@ func TestSharedModuleUsesClientIPSelection(t *testing.T) {
 	r.True(results["3.1"])
 	r.True(results["3.1-via-bar"])
 }
+
+func TestDiscoverModulesFromUpstream(t *testing.T) {
+	proxy := startProxy(t, func(s *server.Server) {
+		s.ConfigPath = getProxyConfigPath("config-discover.toml")
+	})
+
+	r := require.New(t)
+	outputBytes, err := newRsyncCommand(getRsyncPath(proxy, "/")).CombinedOutput()
+	if err != nil {
+		t.Log(string(outputBytes))
+		r.NoError(err)
+	}
+
+	r.Equal("bar\nbaz\nfoo\n", string(outputBytes))
+}

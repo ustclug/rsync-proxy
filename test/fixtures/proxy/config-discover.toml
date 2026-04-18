@@ -1,0 +1,7 @@
+[upstreams.u1]
+address = "127.0.0.1:1234"
+discover_modules = true
+
+[upstreams.u2]
+address = "127.0.0.1:1235"
+discover_modules = true

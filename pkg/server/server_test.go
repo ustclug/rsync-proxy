@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -318,4 +319,101 @@ func TestStatusIncludesSelectedUpstream(t *testing.T) {
 	}, time.Second, 10*time.Millisecond)
 
 	wg.Done()
+}
+
+func TestRetryDiscoveredModulesAfterStartup(t *testing.T) {
+	srv := New()
+	srv.retryInterval = 10 * time.Millisecond
+	srv.ReadTimeout = time.Second
+	srv.WriteTimeout = time.Second
+
+	var modules atomic.Pointer[[]string]
+	upstream := rsync.NewServer(func(conn *rsync.Conn) {
+		defer conn.Close()
+
+		if _, err := conn.ReadLine(); err != nil {
+			return
+		}
+		current := modules.Load()
+		if current == nil {
+			return
+		}
+
+		_, _ = conn.Write(RsyncdServerVersion)
+		line, err := conn.ReadLine()
+		if err != nil || line != "\n" {
+			return
+		}
+		for _, module := range *current {
+			_, _ = conn.Write([]byte(module + "\n"))
+		}
+		_, _ = conn.Write(RsyncdExit)
+	})
+	upstream.Start()
+	defer upstream.Close()
+
+	configContent := `
+[upstreams.u1]
+address = "` + upstream.Listener.Addr().String() + `"
+discover_modules = true
+`
+	require.NoError(t, srv.ReadConfig(strings.NewReader(configContent), true))
+	assert.Empty(t, srv.modules)
+
+	available := []string{"foo", "bar"}
+	modules.Store(&available)
+
+	require.Eventually(t, func() bool {
+		srv.reloadLock.RLock()
+		defer srv.reloadLock.RUnlock()
+		_, hasFoo := srv.modules["foo"]
+		_, hasBar := srv.modules["bar"]
+		return hasFoo && hasBar
+	}, time.Second, 20*time.Millisecond)
+}
+
+func TestReloadRestartsModuleDiscovery(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+
+	firstUpstream := rsync.NewModuleListServer([]string{"foo"})
+	firstUpstream.Start()
+	defer firstUpstream.Close()
+
+	secondUpstream := rsync.NewModuleListServer([]string{"bar", "baz"})
+	secondUpstream.Start()
+	defer secondUpstream.Close()
+
+	writeConfig := func(addr string) {
+		configContent := fmt.Sprintf(`
+[proxy]
+listen = "127.0.0.1:0"
+listen_http = "127.0.0.1:0"
+
+[upstreams.u1]
+address = %q
+discover_modules = true
+`, addr)
+		require.NoError(t, os.WriteFile(configPath, []byte(configContent), 0600))
+	}
+
+	writeConfig(firstUpstream.Listener.Addr().String())
+	srv := New()
+	srv.ConfigPath = configPath
+	srv.retryInterval = 10 * time.Millisecond
+	srv.ReadTimeout = time.Second
+	srv.WriteTimeout = time.Second
+	require.NoError(t, srv.ReadConfigFromFile(true))
+	require.Contains(t, srv.modules, "foo")
+
+	writeConfig(secondUpstream.Listener.Addr().String())
+	require.NoError(t, srv.ReadConfigFromFile(true))
+	require.Eventually(t, func() bool {
+		srv.reloadLock.RLock()
+		defer srv.reloadLock.RUnlock()
+		_, hasFoo := srv.modules["foo"]
+		_, hasBar := srv.modules["bar"]
+		_, hasBaz := srv.modules["baz"]
+		return !hasFoo && hasBar && hasBaz
+	}, time.Second, 20*time.Millisecond)
 }

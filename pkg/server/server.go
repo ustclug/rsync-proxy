@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -24,7 +25,9 @@ import (
 )
 
 const (
-	TCPBufferSize = 256
+	TCPBufferSize          = 256
+	moduleRetryInterval    = 30 * time.Second
+	moduleDiscoveryBufSize = 4096
 )
 
 var (
@@ -76,6 +79,13 @@ type Target struct {
 	UseProxyProtocol bool
 }
 
+type upstreamConfig struct {
+	Name            string
+	Target          Target
+	Modules         []string
+	DiscoverModules bool
+}
+
 type Server struct {
 	// --- Options section
 	// Listen Address
@@ -97,8 +107,14 @@ type Server struct {
 	bufPool    sync.Pool
 	// name -> upstream targets
 	modules        map[string][]Target
+	upstreams      []upstreamConfig
 	tlsCertificate *tls.Certificate
 	tlsConfig      *tls.Config
+	retryInterval  time.Duration
+
+	discoveryMu      sync.Mutex
+	discoveryVersion uint64
+	discoveryCancel  context.CancelFunc
 
 	queue *queue.Queue
 
@@ -135,10 +151,11 @@ func New() *Server {
 				return &buf
 			},
 		},
-		dialer:    net.Dialer{}, // customize keep alive interval?
-		accessLog: accessLog,
-		errorLog:  errorLog,
-		queue:     queue.New(0, 0),
+		dialer:        net.Dialer{}, // customize keep alive interval?
+		accessLog:     accessLog,
+		errorLog:      errorLog,
+		queue:         queue.New(0, 0),
+		retryInterval: moduleRetryInterval,
 	}
 	s.tlsConfig = &tls.Config{GetCertificate: s.getTLSCertificate}
 	return s
@@ -176,7 +193,7 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 
 	s.queue.SetMax(c.Proxy.MaxActiveConns, c.Proxy.MaxQueuedConns)
 
-	modules := map[string][]Target{}
+	upstreams := make([]upstreamConfig, 0, len(c.Upstreams))
 	upstreamNames := make([]string, 0, len(c.Upstreams))
 	for upstreamName := range c.Upstreams {
 		upstreamNames = append(upstreamNames, upstreamName)
@@ -184,16 +201,24 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 	sort.Strings(upstreamNames)
 	for _, upstreamName := range upstreamNames {
 		v := c.Upstreams[upstreamName]
+		if len(v.Modules) == 0 && !v.DiscoverModules {
+			return fmt.Errorf("upstream=%s must set modules or discover_modules", upstreamName)
+		}
 		addr := v.Address
 		_, err := net.ResolveTCPAddr("tcp", addr)
 		if err != nil {
 			return fmt.Errorf("resolve address: %w, upstream=%s, address=%s", err, upstreamName, addr)
 		}
-		target := Target{Addr: addr, UseProxyProtocol: v.UseProxyProtocol}
-		for _, moduleName := range v.Modules {
-			modules[moduleName] = append(modules[moduleName], target)
-		}
+		upstreams = append(upstreams, upstreamConfig{
+			Name:            upstreamName,
+			Target:          Target{Addr: addr, UseProxyProtocol: v.UseProxyProtocol},
+			Modules:         append([]string(nil), v.Modules...),
+			DiscoverModules: v.DiscoverModules,
+		})
 	}
+
+	discoveredModules, failed := s.discoverConfiguredModules(context.Background(), upstreams)
+	modules := buildModuleTargets(upstreams, discoveredModules)
 
 	s.reloadLock.Lock()
 	defer s.reloadLock.Unlock()
@@ -216,8 +241,191 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 	}
 	s.Motd = c.Proxy.Motd
 	s.modules = modules
+	s.upstreams = upstreams
 	s.tlsCertificate = tlsCertificate
+	s.restartModuleDiscovery(upstreams, discoveredModules, failed)
 	return nil
+}
+
+func buildModuleTargets(upstreams []upstreamConfig, discovered map[string][]string) map[string][]Target {
+	modules := map[string][]Target{}
+	for _, upstream := range upstreams {
+		moduleNames := upstream.Modules
+		if upstream.DiscoverModules {
+			moduleNames = discovered[upstream.Name]
+		}
+		for _, moduleName := range moduleNames {
+			modules[moduleName] = append(modules[moduleName], upstream.Target)
+		}
+	}
+	return modules
+}
+
+func (s *Server) discoverConfiguredModules(ctx context.Context, upstreams []upstreamConfig) (map[string][]string, []upstreamConfig) {
+	discovered := map[string][]string{}
+	failed := make([]upstreamConfig, 0)
+	for _, upstream := range upstreams {
+		if !upstream.DiscoverModules {
+			continue
+		}
+		modules, err := s.discoverModulesFromUpstream(ctx, upstream)
+		if err != nil {
+			s.logModuleDiscoveryFailure(upstream, err)
+			failed = append(failed, upstream)
+			continue
+		}
+		discovered[upstream.Name] = modules
+		s.logModuleDiscoverySuccess(upstream, modules)
+	}
+	return discovered, failed
+}
+
+func (s *Server) restartModuleDiscovery(upstreams []upstreamConfig, discovered map[string][]string, pending []upstreamConfig) {
+	s.discoveryMu.Lock()
+	defer s.discoveryMu.Unlock()
+	s.discoveryVersion++
+	version := s.discoveryVersion
+	if s.discoveryCancel != nil {
+		s.discoveryCancel()
+		s.discoveryCancel = nil
+	}
+	if len(pending) == 0 {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.discoveryCancel = cancel
+	seed := cloneDiscoveredModules(discovered)
+	allUpstreams := append([]upstreamConfig(nil), upstreams...)
+	failedUpstreams := append([]upstreamConfig(nil), pending...)
+	go s.retryDiscoverModules(ctx, version, allUpstreams, seed, failedUpstreams)
+}
+
+func cloneDiscoveredModules(src map[string][]string) map[string][]string {
+	dup := make(map[string][]string, len(src))
+	for name, modules := range src {
+		dup[name] = append([]string(nil), modules...)
+	}
+	return dup
+}
+
+func (s *Server) retryDiscoverModules(ctx context.Context, version uint64, upstreams []upstreamConfig, discovered map[string][]string, pending []upstreamConfig) {
+	interval := s.retryInterval
+	if interval <= 0 {
+		interval = moduleRetryInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for len(pending) > 0 {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		nextPending := pending[:0]
+		updated := false
+		for _, upstream := range pending {
+			modules, err := s.discoverModulesFromUpstream(ctx, upstream)
+			if err != nil {
+				s.logModuleDiscoveryFailure(upstream, err)
+				nextPending = append(nextPending, upstream)
+				continue
+			}
+			discovered[upstream.Name] = modules
+			updated = true
+			s.logModuleDiscoverySuccess(upstream, modules)
+		}
+		pending = nextPending
+		if updated {
+			s.applyDiscoveredModules(version, upstreams, discovered)
+		}
+	}
+
+	s.discoveryMu.Lock()
+	if s.discoveryVersion == version {
+		s.discoveryCancel = nil
+	}
+	s.discoveryMu.Unlock()
+}
+
+func (s *Server) applyDiscoveredModules(version uint64, upstreams []upstreamConfig, discovered map[string][]string) {
+	s.discoveryMu.Lock()
+	if s.discoveryVersion != version {
+		s.discoveryMu.Unlock()
+		return
+	}
+	s.discoveryMu.Unlock()
+
+	modules := buildModuleTargets(upstreams, discovered)
+
+	s.reloadLock.Lock()
+	defer s.reloadLock.Unlock()
+	s.modules = modules
+	s.upstreams = append([]upstreamConfig(nil), upstreams...)
+}
+
+func (s *Server) discoverModulesFromUpstream(ctx context.Context, upstream upstreamConfig) ([]string, error) {
+	conn, err := s.dialer.DialContext(ctx, "tcp", upstream.Target.Addr)
+	if err != nil {
+		return nil, fmt.Errorf("dial: %w", err)
+	}
+	defer conn.Close()
+
+	reader := bufio.NewReaderSize(conn, moduleDiscoveryBufSize)
+	if _, err := writeWithTimeout(conn, RsyncdServerVersion, s.WriteTimeout); err != nil {
+		return nil, fmt.Errorf("send version: %w", err)
+	}
+
+	if s.ReadTimeout > 0 {
+		_ = conn.SetReadDeadline(time.Now().Add(s.ReadTimeout))
+	}
+	line, err := reader.ReadString(lineFeed)
+	if err != nil {
+		return nil, fmt.Errorf("read version: %w", err)
+	}
+	if !bytes.HasPrefix([]byte(line), RsyncdVersionPrefix) {
+		return nil, fmt.Errorf("unexpected version response: %q", line)
+	}
+
+	if _, err := writeWithTimeout(conn, []byte{'\n'}, s.WriteTimeout); err != nil {
+		return nil, fmt.Errorf("request module list: %w", err)
+	}
+
+	modules := make([]string, 0)
+	for {
+		if s.ReadTimeout > 0 {
+			_ = conn.SetReadDeadline(time.Now().Add(s.ReadTimeout))
+		}
+		line, err = reader.ReadString(lineFeed)
+		if err != nil {
+			return nil, fmt.Errorf("read module list: %w", err)
+		}
+		line = strings.TrimSuffix(line, string(lineFeed))
+		if line == strings.TrimSuffix(string(RsyncdExit), string(lineFeed)) {
+			break
+		}
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		modules = append(modules, fields[0])
+	}
+	sort.Strings(modules)
+	return modules, nil
+}
+
+func (s *Server) logModuleDiscoveryFailure(upstream upstreamConfig, err error) {
+	log.Printf("[WARN] discover modules from upstream %s (%s): %v", upstream.Name, upstream.Target.Addr, err)
+	s.errorLog.F("[WARN] discover modules from upstream %s (%s): %v", upstream.Name, upstream.Target.Addr, err)
+}
+
+func (s *Server) logModuleDiscoverySuccess(upstream upstreamConfig, modules []string) {
+	log.Printf("[INFO] discovered modules from upstream %s (%s): %s", upstream.Name, upstream.Target.Addr, strings.Join(modules, ", "))
+	s.errorLog.F("[INFO] discovered modules from upstream %s (%s): %s", upstream.Name, upstream.Target.Addr, strings.Join(modules, ", "))
 }
 
 func chooseTargetByClientIP(ip net.IP, targetCount int) int {
@@ -592,6 +800,12 @@ func (s *Server) Listen() error {
 }
 
 func (s *Server) Close() {
+	s.discoveryMu.Lock()
+	if s.discoveryCancel != nil {
+		s.discoveryCancel()
+		s.discoveryCancel = nil
+	}
+	s.discoveryMu.Unlock()
 	if s.TCPListener != nil {
 		_ = s.TCPListener.Close()
 	}
