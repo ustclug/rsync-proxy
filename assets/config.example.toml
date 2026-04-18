@@ -19,6 +19,7 @@ modules = ["foo"]
 
 [upstreams.u1_auto]
 address = "127.0.0.1:1234"
+# If upstream is not available when discover_modules is true, rsync-proxy refuses to start/reload.
 discover_modules = true
 
 [upstreams.u2]
