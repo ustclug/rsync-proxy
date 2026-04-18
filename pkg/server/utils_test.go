@@ -66,5 +66,5 @@ func TestReadLine(t *testing.T) {
 	require.NoError(t, err)
 	got := buf[:n]
 	expected := []byte("@RSYNCD: 31.0\n")
-	assert.Equal(t, expected, got)
+	assert.Equal(t, expected, got, "unexpected data")
 }

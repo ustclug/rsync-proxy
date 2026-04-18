@@ -94,18 +94,20 @@ func TestMotdFromServer(t *testing.T) {
 		"fake": fakeRsync.Listener.Addr().String(),
 	}
 
+	r := require.New(t)
+
 	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())
-	require.NoError(t, err)
+	r.NoError(err)
 	conn := rsync.NewConn(rawConn)
 	defer conn.Close()
 
 	_, err = doClientHandshake(conn, RsyncdServerVersion, "fake")
-	require.NoError(t, err)
+	r.NoError(err)
 
 	allData, err := io.ReadAll(conn)
-	require.NoError(t, err)
+	r.NoError(err)
 
-	assert.Equal(t, proxyMotd+"\n"+serverMotd, string(allData))
+	r.Equal(proxyMotd+"\n"+serverMotd, string(allData))
 }
 
 // See also: https://github.com/ustclug/rsync-proxy/commit/d581c18dab8008c5bc9c1a5d667b49d67a4edfed
@@ -113,19 +115,17 @@ func TestClientReadTimeout(t *testing.T) {
 	srv := startServer(t)
 	defer srv.Close()
 
+	r := require.New(t)
+
 	fakeRsync := rsync.NewServer(func(conn *rsync.Conn) {
 		defer conn.Close()
 
 		_, _, err := doServerHandshake(conn, RsyncdServerVersion)
-		if err != nil {
-			return
-		}
+		r.NoError(err, "server handshake")
 
 		for i := 0; i < 3; i++ {
 			_, err = conn.Write([]byte("data\n"))
-			if err != nil {
-				return
-			}
+			r.NoError(err, "write data")
 			time.Sleep(srv.ReadTimeout)
 		}
 	})
@@ -137,21 +137,23 @@ func TestClientReadTimeout(t *testing.T) {
 	}
 
 	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())
-	require.NoError(t, err)
+	r.NoError(err)
 	conn := rsync.NewConn(rawConn)
 	defer conn.Close()
 
 	_, err = doClientHandshake(conn, RsyncdServerVersion, "fake")
-	require.NoError(t, err)
+	r.NoError(err)
 
 	allData, err := io.ReadAll(conn)
-	require.NoError(t, err)
+	r.NoError(err)
 
 	expected := strings.Repeat("data\n", 3)
-	assert.Equal(t, expected, string(allData))
+	r.Equal(expected, string(allData))
 }
 
 func TestTLSRsyncListener(t *testing.T) {
+	r := require.New(t)
+
 	tlsFiles := writeTestTLSCert(t, t.TempDir(), "server", "rsync-proxy-tls")
 
 	srv := New()
@@ -165,11 +167,11 @@ func TestTLSRsyncListener(t *testing.T) {
 	srv.ReadTimeout = timeout
 	srv.WriteTimeout = timeout
 	cert, err := tls.LoadX509KeyPair(tlsFiles.certPath, tlsFiles.keyPath)
-	require.NoError(t, err)
+	r.NoError(err)
 	srv.tlsCertificate = &cert
 	srv.tlsConfig.GetCertificate = srv.getTLSCertificate
 	err = srv.Listen()
-	require.NoError(t, err)
+	r.NoError(err)
 	defer srv.Close()
 
 	go func() {
@@ -181,9 +183,7 @@ func TestTLSRsyncListener(t *testing.T) {
 		defer conn.Close()
 
 		_, module, err := doServerHandshake(conn, RsyncdServerVersion)
-		if err != nil {
-			return
-		}
+		r.NoError(err, "server handshake")
 		assert.Equal(t, "fake\n", module)
 	})
 	fakeRsync.Start()
@@ -195,19 +195,19 @@ func TestTLSRsyncListener(t *testing.T) {
 
 	pool := x509.NewCertPool()
 	certPEM, err := os.ReadFile(tlsFiles.certPath)
-	require.NoError(t, err)
+	r.NoError(err)
 	pool.AppendCertsFromPEM(certPEM)
 
 	rawConn, err := tls.Dial("tcp", srv.TLSListenAddr, &tls.Config{
 		RootCAs:    pool,
 		ServerName: "localhost",
 	})
-	require.NoError(t, err)
+	r.NoError(err)
 	conn := rsync.NewConn(rawConn)
 	defer conn.Close()
 
 	_, err = doClientHandshake(conn, RsyncdServerVersion, "fake")
-	require.NoError(t, err)
+	r.NoError(err)
 }
 
 func TestReloadTLSCertificate(t *testing.T) {

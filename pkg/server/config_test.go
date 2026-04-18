@@ -24,14 +24,14 @@ address = "example.com:1235"
 modules = ["bar2"]
 `
 	err := s.ReadConfig(strings.NewReader(configContent), true)
-	require.NoError(t, err)
+	require.NoError(t, err, "load config")
 	expectedMods := map[string]string{
 		"foo1": "127.0.0.1:1234",
 		"foo2": "127.0.0.1:1234",
 		"bar1": "127.0.0.1:1235",
 		"bar2": "example.com:1235",
 	}
-	assert.Equal(t, expectedMods, s.modules)
+	assert.Equal(t, expectedMods, s.modules, "wrong modules")
 }
 
 func TestDuplicatedModulesInConfig(t *testing.T) {
@@ -46,8 +46,8 @@ address = "127.0.0.1:1235"
 modules = ["foo1"]
 `
 	err := s.ReadConfig(strings.NewReader(configContent), true)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "duplicate module name")
+	require.Error(t, err, "unexpected success")
+	assert.Contains(t, err.Error(), "duplicate module name", "unexpected error message")
 }
 
 func TestLoadMotdInConfig(t *testing.T) {
@@ -61,9 +61,9 @@ address = "127.0.0.1:1234"
 modules = ["foo1", "foo2"]
 `
 	err := s.ReadConfig(strings.NewReader(configContent), true)
-	require.NoError(t, err)
+	require.NoError(t, err, "load config")
 	expectedMotd := "Proudly served by rsync-proxy\ntest newline"
-	assert.Equal(t, expectedMotd, s.Motd)
+	assert.Equal(t, expectedMotd, s.Motd, "wrong modules")
 }
 
 func TestLoadTLSConfig(t *testing.T) {
@@ -81,9 +81,9 @@ address = "127.0.0.1:1234"
 modules = ["foo1"]
 `
 	err := s.ReadConfig(strings.NewReader(configContent), true)
-	require.NoError(t, err)
-	assert.Equal(t, "127.0.0.1:8731", s.TLSListenAddr)
-	assert.NotNil(t, s.tlsCertificate)
+	require.NoError(t, err, "load config")
+	assert.Equal(t, "127.0.0.1:8731", s.TLSListenAddr, "wrong TLS listen addr")
+	assert.NotNil(t, s.tlsCertificate, "no tls cert")
 }
 
 func TestLoadTLSConfigWithoutKeyPair(t *testing.T) {
@@ -97,6 +97,6 @@ address = "127.0.0.1:1234"
 modules = ["foo1"]
 `
 	err := s.ReadConfig(strings.NewReader(configContent), true)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "listen_tls requires tls_cert_file and tls_key_file")
+	require.Error(t, err, "load config")
+	assert.Contains(t, err.Error(), "listen_tls requires tls_cert_file and tls_key_file", "unexpected error message")
 }

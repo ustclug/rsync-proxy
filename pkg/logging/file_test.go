@@ -14,12 +14,12 @@ func assertFileContent(t *testing.T, filename, content string) {
 	defer f.Close()
 	fi, err := f.Stat()
 	require.NoError(t, err)
-	assert.Equal(t, int64(len(content)), fi.Size())
+	assert.Equal(t, int64(len(content)), fi.Size(), "file size does not match")
 
 	buf := make([]byte, len(content))
 	_, err = f.Read(buf)
 	require.NoError(t, err)
-	assert.Equal(t, content, string(buf))
+	assert.Equal(t, content, string(buf), "file content does not match")
 }
 
 func TestFileLogger(t *testing.T) {

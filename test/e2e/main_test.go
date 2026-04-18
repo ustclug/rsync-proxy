@@ -107,26 +107,26 @@ func startProxy(t *testing.T, overrides ...func(*server.Server)) *server.Server 
 	}
 
 	err := s.ReadConfigFromFile(true)
-	require.NoError(t, err)
+	require.NoError(t, err, "load config")
 	s.ListenAddr = LOCAL_BIND_ADDR
 	s.HTTPListenAddr = LOCAL_BIND_ADDR
 
 	err = s.Listen()
-	require.NoError(t, err)
+	require.NoError(t, err, "listen")
 
 	go func() {
 		err := s.Run()
-		assert.NoError(t, err)
+		assert.NoError(t, err, "run")
 	}()
 
 	_, port, err := net.SplitHostPort(s.ListenAddr)
-	require.NoError(t, err)
+	require.NoError(t, err, "get port")
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
 
 	err = ensureTCPPortIsReady(ctx, port)
-	require.NoError(t, err)
+	require.NoError(t, err, "wait TCP to be ready")
 
 	t.Cleanup(func() {
 		s.Close()
