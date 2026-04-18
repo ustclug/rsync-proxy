@@ -43,8 +43,8 @@ modules = ["foo1", "foo2"]
 
 [upstreams.u2]
 address = "127.0.0.1:1235"
-		modules = ["foo1"]
-	`
+modules = ["foo1"]
+`
 	err := s.ReadConfig(strings.NewReader(configContent), true)
 	require.NoError(t, err, "load config")
 	assert.Equal(t, []Target{
