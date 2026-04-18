@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ustclug/rsync-proxy/cmd"
@@ -99,7 +98,7 @@ func TestReloadConfig(t *testing.T) {
 		r.NoError(err)
 	}
 
-	assert.Equal(t, "bar\nbaz\nfoo\n", string(outputBytes))
+	r.Equal("bar\nbaz\nfoo\n", string(outputBytes))
 
 	tmpFile, err := os.CreateTemp("", "rsync-proxy-e2e-*")
 	r.NoError(err)
