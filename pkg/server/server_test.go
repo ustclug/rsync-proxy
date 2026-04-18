@@ -270,20 +270,15 @@ modules = ["foo"]
 }
 
 func TestChooseTargetByClientIP(t *testing.T) {
-	targets := []Target{
-		{Addr: "127.0.0.1:1234"},
-		{Addr: "127.0.0.1:1235"},
-	}
-
-	first := chooseTargetByClientIP(net.ParseIP("192.0.2.1"), targets)
-	second := chooseTargetByClientIP(net.ParseIP("192.0.2.1"), targets)
-	third := chooseTargetByClientIP(net.ParseIP("198.51.100.10"), targets)
+	first := chooseTargetByClientIP(net.ParseIP("192.0.2.1"), 2)
+	second := chooseTargetByClientIP(net.ParseIP("192.0.2.1"), 2)
+	third := chooseTargetByClientIP(net.ParseIP("198.51.100.10"), 2)
+	single := chooseTargetByClientIP(net.ParseIP("203.0.113.1"), 1)
 
 	assert.Equal(t, first, second)
-	assert.Contains(t, targets, first)
-	assert.Contains(t, targets, third)
-	assert.NotEqual(t, Target{}, first)
-	assert.NotEqual(t, Target{}, third)
+	assert.Contains(t, []int{0, 1}, first)
+	assert.Contains(t, []int{0, 1}, third)
+	assert.Equal(t, 0, single)
 }
 
 func TestStatusIncludesSelectedUpstream(t *testing.T) {

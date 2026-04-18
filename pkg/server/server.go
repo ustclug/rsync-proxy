@@ -220,9 +220,9 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 	return nil
 }
 
-func chooseTargetByClientIP(ip net.IP, targets []Target) Target {
-	if len(targets) == 1 {
-		return targets[0]
+func chooseTargetByClientIP(ip net.IP, targetCount int) int {
+	if targetCount <= 1 {
+		return 0
 	}
 
 	normalized := ip.To4()
@@ -230,13 +230,12 @@ func chooseTargetByClientIP(ip net.IP, targets []Target) Target {
 		normalized = ip.To16()
 	}
 	if normalized == nil {
-		return targets[0]
+		return 0
 	}
 
 	h := fnv.New32a()
 	_, _ = h.Write(normalized)
-	idx := h.Sum32() % uint32(len(targets))
-	return targets[idx]
+	return int(h.Sum32() % uint32(targetCount))
 }
 
 func (s *Server) getTLSCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
@@ -375,7 +374,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 		return nil
 	}
 
-	target := chooseTargetByClientIP(net.ParseIP(ip), targets)
+	target := targets[chooseTargetByClientIP(net.ParseIP(ip), len(targets))]
 	upstreamAddr := target.Addr
 	useProxyProtocol := target.UseProxyProtocol
 	info.UpstreamAddr = upstreamAddr
