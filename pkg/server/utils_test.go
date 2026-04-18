@@ -3,9 +3,11 @@ package server
 import (
 	"io"
 	"net"
-	"reflect"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type fakeConn struct {
@@ -61,12 +63,8 @@ func TestReadLine(t *testing.T) {
 
 	buf := make([]byte, TCPBufferSize)
 	n, err := readLine(c, buf, time.Minute)
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	got := buf[:n]
 	expected := []byte("@RSYNCD: 31.0\n")
-	if !reflect.DeepEqual(got, expected) {
-		t.Errorf("Unexpected data\nExpected: %s\nGot: %s\n", string(expected), string(got))
-	}
+	assert.Equal(t, expected, got, "unexpected data")
 }

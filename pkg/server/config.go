@@ -15,11 +15,14 @@ type Upstream struct {
 }
 
 type ProxySettings struct {
-	Listen     string `toml:"listen"`
-	ListenHTTP string `toml:"listen_http"`
-	Motd       string `toml:"motd"`
-	AccessLog  string `toml:"access_log"`
-	ErrorLog   string `toml:"error_log"`
+	Listen      string `toml:"listen"`
+	ListenTLS   string `toml:"listen_tls"`
+	ListenHTTP  string `toml:"listen_http"`
+	Motd        string `toml:"motd"`
+	AccessLog   string `toml:"access_log"`
+	ErrorLog    string `toml:"error_log"`
+	TLSCertFile string `toml:"tls_cert_file"`
+	TLSKeyFile  string `toml:"tls_key_file"`
 
 	MaxActiveConns int `toml:"max_active_connections"`
 	MaxQueuedConns int `toml:"max_queued_connections"`

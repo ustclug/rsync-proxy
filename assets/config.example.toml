@@ -2,9 +2,12 @@
 
 [proxy]
 listen = "0.0.0.0:873"
+listen_tls = "0.0.0.0:874"
 listen_http = "127.0.0.1:9528"
 access_log = "/var/log/rsync-proxy/access.log"
 error_log = "/var/log/rsync-proxy/error.log"
+tls_cert_file = "/etc/rsync-proxy/tls/server.crt"
+tls_key_file = "/etc/rsync-proxy/tls/server.key"
 max_active_connections = 60
 max_queued_connections = 60
 
