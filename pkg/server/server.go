@@ -154,7 +154,7 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 	}
 	if c.Proxy.ListenTLS == "" {
 		if c.Proxy.TLSCertFile != "" || c.Proxy.TLSKeyFile != "" {
-			return fmt.Errorf("tls_cert_file and tls_key_file require listen_tls")
+			log.Print("[WARN] tls_cert_file or tls_key_file is set but listen_tls is not set")
 		}
 	} else {
 		if c.Proxy.TLSCertFile == "" || c.Proxy.TLSKeyFile == "" {
