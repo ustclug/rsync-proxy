@@ -131,7 +131,7 @@ func TestReloadConfigWithDuplicatedModules(t *testing.T) {
 		s.ConfigPath = dst.Name()
 	})
 
-	r.NoError(copyFile(getProxyConfigPath("config5.toml"), dst.Name()))
+	r.NoError(copyFile(getProxyConfigPath("config3.toml"), dst.Name()))
 
 	var reloadOutput bytes.Buffer
 	err = cmd.SendReloadRequest(proxy.HTTPListenAddr, &reloadOutput, &reloadOutput)
@@ -144,14 +144,14 @@ func TestReloadConfigWithDuplicatedModules(t *testing.T) {
 		r.NoError(err)
 	}
 
-	r.Equal("foo\n", string(outputBytes))
+	r.Equal("bar\nfoo\n", string(outputBytes))
 
 	tmpFile, err := os.CreateTemp("", "rsync-proxy-e2e-*")
 	r.NoError(err)
 	r.NoError(tmpFile.Close())
 	defer os.Remove(tmpFile.Name())
 
-	outputBytes, err = newRsyncCommand(getRsyncPath(proxy, "/foo/v3.1/data"), tmpFile.Name()).CombinedOutput()
+	outputBytes, err = newRsyncCommand(getRsyncPath(proxy, "/bar/v3.2/data"), tmpFile.Name()).CombinedOutput()
 	if err != nil {
 		t.Log(string(outputBytes))
 		r.NoError(err)
@@ -159,7 +159,7 @@ func TestReloadConfigWithDuplicatedModules(t *testing.T) {
 
 	got, err := os.ReadFile(tmpFile.Name())
 	r.NoError(err)
-	r.Contains([]string{"3.1", "3.1-via-bar"}, string(got))
+	r.Equal("3.2", string(got))
 }
 
 func TestProxyProtocol(t *testing.T) {
