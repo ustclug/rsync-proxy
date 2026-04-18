@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"net"
@@ -42,6 +43,7 @@ type ConnInfo struct {
 	RemoteAddr    string
 	ConnectedAt   time.Time
 	Module        string
+	UpstreamAddr  string
 	SentBytes     atomic.Int64
 	ReceivedBytes atomic.Int64
 }
@@ -54,6 +56,7 @@ func (c *ConnInfo) MarshalJSON() ([]byte, error) {
 		RemoteAddr    string    `json:"remote"`
 		ConnectedAt   time.Time `json:"connected"`
 		Module        string    `json:"module"`
+		UpstreamAddr  string    `json:"upstream"`
 		SentBytes     int64     `json:"sentBytes"`
 		ReceivedBytes int64     `json:"receivedBytes"`
 	}{
@@ -62,9 +65,15 @@ func (c *ConnInfo) MarshalJSON() ([]byte, error) {
 		RemoteAddr:    c.RemoteAddr,
 		ConnectedAt:   c.ConnectedAt,
 		Module:        c.Module,
+		UpstreamAddr:  c.UpstreamAddr,
 		SentBytes:     c.SentBytes.Load(),
 		ReceivedBytes: c.ReceivedBytes.Load(),
 	})
+}
+
+type Target struct {
+	Addr             string
+	UseProxyProtocol bool
 }
 
 type Server struct {
@@ -86,10 +95,8 @@ type Server struct {
 	reloadLock sync.RWMutex
 	dialer     net.Dialer
 	bufPool    sync.Pool
-	// name -> address
-	modules map[string]string
-	// address -> enable proxy protocol or not
-	proxyProtocol  map[string]bool
+	// name -> upstream targets
+	modules        map[string][]Target
 	tlsCertificate *tls.Certificate
 	tlsConfig      *tls.Config
 
@@ -169,21 +176,23 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 
 	s.queue.SetMax(c.Proxy.MaxActiveConns, c.Proxy.MaxQueuedConns)
 
-	modules := map[string]string{}
-	proxyProtocol := map[string]bool{}
-	for upstreamName, v := range c.Upstreams {
+	modules := map[string][]Target{}
+	upstreamNames := make([]string, 0, len(c.Upstreams))
+	for upstreamName := range c.Upstreams {
+		upstreamNames = append(upstreamNames, upstreamName)
+	}
+	sort.Strings(upstreamNames)
+	for _, upstreamName := range upstreamNames {
+		v := c.Upstreams[upstreamName]
 		addr := v.Address
 		_, err := net.ResolveTCPAddr("tcp", addr)
 		if err != nil {
 			return fmt.Errorf("resolve address: %w, upstream=%s, address=%s", err, upstreamName, addr)
 		}
+		target := Target{Addr: addr, UseProxyProtocol: v.UseProxyProtocol}
 		for _, moduleName := range v.Modules {
-			if _, ok := modules[moduleName]; ok {
-				return fmt.Errorf("duplicate module name: %s, upstream=%s", moduleName, upstreamName)
-			}
-			modules[moduleName] = addr
+			modules[moduleName] = append(modules[moduleName], target)
 		}
-		proxyProtocol[addr] = v.UseProxyProtocol
 	}
 
 	s.reloadLock.Lock()
@@ -207,9 +216,27 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 	}
 	s.Motd = c.Proxy.Motd
 	s.modules = modules
-	s.proxyProtocol = proxyProtocol
 	s.tlsCertificate = tlsCertificate
 	return nil
+}
+
+func chooseTargetByClientIP(ip net.IP, targets []Target) Target {
+	if len(targets) == 1 {
+		return targets[0]
+	}
+
+	normalized := ip.To4()
+	if normalized == nil {
+		normalized = ip.To16()
+	}
+	if normalized == nil {
+		return targets[0]
+	}
+
+	h := fnv.New32a()
+	_, _ = h.Write(normalized)
+	idx := h.Sum32() % uint32(len(targets))
+	return targets[idx]
 }
 
 func (s *Server) getTLSCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
@@ -338,11 +365,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	s.connInfo.Store(index, &info)
 
 	s.reloadLock.RLock()
-	upstreamAddr, ok := s.modules[moduleName]
-	var useProxyProtocol bool
-	if ok {
-		useProxyProtocol = s.proxyProtocol[upstreamAddr]
-	}
+	targets, ok := s.modules[moduleName]
 	s.reloadLock.RUnlock()
 
 	if !ok {
@@ -351,6 +374,12 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 		s.accessLog.F("client %s requests non-existing module %s", ip, moduleName)
 		return nil
 	}
+
+	target := chooseTargetByClientIP(net.ParseIP(ip), targets)
+	upstreamAddr := target.Addr
+	useProxyProtocol := target.UseProxyProtocol
+	info.UpstreamAddr = upstreamAddr
+	s.connInfo.Store(index, &info)
 
 	conn, err := s.dialer.DialContext(ctx, "tcp", upstreamAddr)
 	if err != nil {

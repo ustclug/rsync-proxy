@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -90,8 +91,8 @@ func TestMotdFromServer(t *testing.T) {
 	fakeRsync.Start()
 	defer fakeRsync.Close()
 
-	srv.modules = map[string]string{
-		"fake": fakeRsync.Listener.Addr().String(),
+	srv.modules = map[string][]Target{
+		"fake": []Target{{Addr: fakeRsync.Listener.Addr().String()}},
 	}
 
 	r := require.New(t)
@@ -132,8 +133,8 @@ func TestClientReadTimeout(t *testing.T) {
 	fakeRsync.Start()
 	defer fakeRsync.Close()
 
-	srv.modules = map[string]string{
-		"fake": fakeRsync.Listener.Addr().String(),
+	srv.modules = map[string][]Target{
+		"fake": []Target{{Addr: fakeRsync.Listener.Addr().String()}},
 	}
 
 	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())
@@ -189,8 +190,8 @@ func TestTLSRsyncListener(t *testing.T) {
 	fakeRsync.Start()
 	defer fakeRsync.Close()
 
-	srv.modules = map[string]string{
-		"fake": fakeRsync.Listener.Addr().String(),
+	srv.modules = map[string][]Target{
+		"fake": []Target{{Addr: fakeRsync.Listener.Addr().String()}},
 	}
 
 	pool := x509.NewCertPool()
@@ -266,4 +267,60 @@ modules = ["foo"]
 	writeConfig(secondCert)
 	require.NoError(t, srv.ReadConfigFromFile(true))
 	assert.Equal(t, secondCert.commonName, getCommonName())
+}
+
+func TestChooseTargetByClientIP(t *testing.T) {
+	targets := []Target{
+		{Addr: "127.0.0.1:1234"},
+		{Addr: "127.0.0.1:1235"},
+	}
+
+	first := chooseTargetByClientIP(net.ParseIP("192.0.2.1"), targets)
+	second := chooseTargetByClientIP(net.ParseIP("192.0.2.1"), targets)
+	third := chooseTargetByClientIP(net.ParseIP("198.51.100.10"), targets)
+
+	assert.Equal(t, first, second)
+	assert.Contains(t, targets, first)
+	assert.Contains(t, targets, third)
+	assert.NotEqual(t, Target{}, first)
+	assert.NotEqual(t, Target{}, third)
+}
+
+func TestStatusIncludesSelectedUpstream(t *testing.T) {
+	srv := startServer(t)
+	defer srv.Close()
+
+	var (
+		wg           sync.WaitGroup
+		upstreamAddr string
+	)
+	wg.Add(1)
+	fakeRsync := rsync.NewServer(func(conn *rsync.Conn) {
+		defer conn.Close()
+		_, _, err := doServerHandshake(conn, RsyncdServerVersion)
+		require.NoError(t, err)
+		wg.Wait()
+	})
+	fakeRsync.Start()
+	defer fakeRsync.Close()
+
+	upstreamAddr = fakeRsync.Listener.Addr().String()
+	srv.modules = map[string][]Target{
+		"fake": []Target{{Addr: upstreamAddr}},
+	}
+
+	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	require.NoError(t, err)
+	conn := rsync.NewConn(rawConn)
+	defer conn.Close()
+
+	_, err = doClientHandshake(conn, RsyncdServerVersion, "fake")
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		infos := srv.ListConnectionInfo()
+		return len(infos) == 1 && infos[0].UpstreamAddr == upstreamAddr
+	}, time.Second, 10*time.Millisecond)
+
+	wg.Done()
 }

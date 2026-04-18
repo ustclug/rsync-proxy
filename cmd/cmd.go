@@ -58,6 +58,7 @@ func SendConnectionsRequest(addr string, stdout, stderr io.Writer) error {
 			Index         int       `json:"index"`
 			RemoteAddr    string    `json:"remote"`
 			Module        string    `json:"module"`
+			UpstreamAddr  string    `json:"upstream"`
 			ConnectedAt   time.Time `json:"connected"`
 			ReceivedBytes int64     `json:"receivedBytes"`
 			SentBytes     int64     `json:"sentBytes"`
@@ -76,10 +77,11 @@ func SendConnectionsRequest(addr string, stdout, stderr io.Writer) error {
 
 	_, _ = fmt.Fprintln(stdout, "=== Active Connections ===")
 	for _, conn := range result.Connections {
-		_, _ = fmt.Fprintf(stdout, "Index: %d, Addr: %s, Module: %s, Connected: %s, Recv: %d bytes, Send: %d bytes\n",
+		_, _ = fmt.Fprintf(stdout, "Index: %d, Addr: %s, Module: %s, Upstream: %s, Connected: %s, Recv: %d bytes, Send: %d bytes\n",
 			conn.Index,
 			conn.RemoteAddr,
 			conn.Module,
+			conn.UpstreamAddr,
 			conn.ConnectedAt.Format("2006-01-02 15:04:05"),
 			conn.ReceivedBytes,
 			conn.SentBytes)
