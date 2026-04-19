@@ -11,6 +11,7 @@ import (
 type Upstream struct {
 	Address          string   `toml:"address"`
 	Modules          []string `toml:"modules"`
+	DiscoverModules  bool     `toml:"discover_modules"`
 	UseProxyProtocol bool     `toml:"use_proxy_protocol"`
 }
 

@@ -17,6 +17,11 @@ motd = "Served by rsync-proxy (https://github.com/ustclug/rsync-proxy)"
 address = "127.0.0.1:1234"
 modules = ["foo"]
 
+[upstreams.u1_auto]
+address = "127.0.0.1:1234"
+# If upstream is not available when discover_modules is true, rsync-proxy refuses to start/reload.
+discover_modules = true
+
 [upstreams.u2]
 address = "192.168.0.10:1235"
 # Modules that multiple upstreams provide would be load-balanced by client IP.

@@ -112,8 +112,8 @@ func startProxy(t *testing.T, overrides ...func(*server.Server)) *server.Server 
 
 	err := s.ReadConfigFromFile(true)
 	require.NoError(t, err, "load config")
-	s.ListenAddr = LOCAL_BIND_ADDR
-	s.HTTPListenAddr = LOCAL_BIND_ADDR
+	s.ListenAddr = LocalBindAddr
+	s.HTTPListenAddr = LocalBindAddr
 
 	err = s.Listen()
 	require.NoError(t, err, "listen")

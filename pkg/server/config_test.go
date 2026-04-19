@@ -3,9 +3,12 @@ package server
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/ustclug/rsync-proxy/test/fake/rsync"
 )
 
 func TestReadConfig(t *testing.T) {
@@ -102,4 +105,59 @@ modules = ["foo1"]
 	err := s.ReadConfig(strings.NewReader(configContent), true)
 	require.Error(t, err, "load config")
 	assert.Contains(t, err.Error(), "listen_tls requires tls_cert_file and tls_key_file", "unexpected error message")
+}
+
+func TestReadConfigRequiresModulesOrDiscovery(t *testing.T) {
+	s := New()
+	configContent := `
+[upstreams.u1]
+address = "127.0.0.1:1234"
+`
+	err := s.ReadConfig(strings.NewReader(configContent), true)
+	require.Error(t, err, "load config")
+	assert.Contains(t, err.Error(), "must set modules or discover_modules")
+}
+
+func TestReadConfigDiscoversModules(t *testing.T) {
+	upstream := rsync.NewModuleListServer([]string{"bar", "foo"})
+	upstream.Start()
+	defer upstream.Close()
+
+	s := New()
+	s.ReadTimeout = time.Second
+	s.WriteTimeout = time.Second
+	configContent := `
+[upstreams.u1]
+address = "` + upstream.Listener.Addr().String() + `"
+discover_modules = true
+`
+	err := s.ReadConfig(strings.NewReader(configContent), true)
+	require.NoError(t, err, "load config")
+	assert.Equal(t, map[string][]Target{
+		"bar": {{Addr: upstream.Listener.Addr().String(), UseProxyProtocol: false}},
+		"foo": {{Addr: upstream.Listener.Addr().String(), UseProxyProtocol: false}},
+	}, s.modules)
+}
+
+func TestReadConfigDiscoversModulesWithMotd(t *testing.T) {
+	upstream := rsync.NewModuleListServerWithMotd([]string{"bar", "foo"}, []string{"Welcome", "Mirror notice"})
+	upstream.Start()
+	defer upstream.Close()
+
+	s := New()
+	s.ReadTimeout = time.Second
+	s.WriteTimeout = time.Second
+	configContent := `
+[upstreams.u1]
+address = "` + upstream.Listener.Addr().String() + `"
+discover_modules = true
+`
+	err := s.ReadConfig(strings.NewReader(configContent), true)
+	require.NoError(t, err, "load config")
+	assert.Equal(t, map[string][]Target{
+		"bar": {{Addr: upstream.Listener.Addr().String(), UseProxyProtocol: false}},
+		"foo": {{Addr: upstream.Listener.Addr().String(), UseProxyProtocol: false}},
+	}, s.modules)
+	assert.NotContains(t, s.modules, "Welcome")
+	assert.NotContains(t, s.modules, "Mirror")
 }

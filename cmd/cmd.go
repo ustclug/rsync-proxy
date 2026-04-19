@@ -6,7 +6,9 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -113,9 +115,10 @@ func printVersion(stdout io.Writer) error {
 
 func New() *cobra.Command {
 	var (
-		reload      bool
-		version     bool
-		connections bool
+		reload          bool
+		version         bool
+		connections     bool
+		upstreamModules string
 	)
 
 	s := server.New()
@@ -128,9 +131,33 @@ func New() *cobra.Command {
 			}
 
 			log.SetOutput(cmd.ErrOrStderr())
+			s.WriteTimeout = time.Minute
+			s.ReadTimeout = time.Minute
 
-			// For reload and connections command, we don't want to open log file as rw, to allow other users to use.
-			err := s.ReadConfigFromFile(!reload && !connections)
+			if upstreamModules != "" && strings.HasPrefix(upstreamModules, "rsync://") {
+				parsed, err := url.Parse(upstreamModules)
+				if err != nil {
+					return fmt.Errorf("parse rsync url: %w", err)
+				}
+				if parsed.Host == "" {
+					return fmt.Errorf("invalid rsync url: missing host")
+				}
+				if parsed.Path != "" && parsed.Path != "/" {
+					return fmt.Errorf("invalid rsync url: path is not allowed")
+				}
+				modules, err := s.DiscoverModules(parsed.Host)
+				if err != nil {
+					return err
+				}
+				for _, name := range modules {
+					_, _ = fmt.Fprintln(cmd.OutOrStdout(), name)
+				}
+				return nil
+			}
+
+			// For helper commands, we don't want to open log file as rw, to allow other users to use.
+			openLog := !reload && !connections && upstreamModules == ""
+			err := s.ReadConfigFromFile(openLog)
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
@@ -140,9 +167,16 @@ func New() *cobra.Command {
 			if connections {
 				return SendConnectionsRequest(s.HTTPListenAddr, cmd.OutOrStdout(), cmd.ErrOrStderr())
 			}
-
-			s.WriteTimeout = time.Minute
-			s.ReadTimeout = time.Minute
+			if upstreamModules != "" {
+				modules, err := s.ListUpstreamModules(upstreamModules)
+				if err != nil {
+					return err
+				}
+				for _, name := range modules {
+					_, _ = fmt.Fprintln(cmd.OutOrStdout(), name)
+				}
+				return nil
+			}
 
 			err = s.Listen()
 			if err != nil {
@@ -156,6 +190,8 @@ func New() *cobra.Command {
 	flags.BoolVar(&reload, "reload", false, "Inform server to reload config")
 	flags.BoolVarP(&version, "version", "V", false, "Print version and exit")
 	flags.BoolVar(&connections, "connections", false, "Show active connections")
+	flags.StringVar(&upstreamModules, "upstream-modules", "", "Print modules for a configured upstream, or rsync URL (with port)")
+	c.MarkFlagsMutuallyExclusive("reload", "connections", "upstream-modules")
 
 	return c
 }

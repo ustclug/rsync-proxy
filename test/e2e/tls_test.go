@@ -144,7 +144,7 @@ func TestTLSListModules(t *testing.T) {
 
 	proxy := startProxy(t, func(s *server.Server) {
 		s.ConfigPath = configPath
-		s.TLSListenAddr = LOCAL_BIND_ADDR
+		s.TLSListenAddr = LocalBindAddr
 	})
 	ensureTLSPortIsReady(t, proxy.TLSListenAddr)
 
@@ -166,7 +166,7 @@ func TestReloadTLSCertificateE2E(t *testing.T) {
 
 	proxy := startProxy(t, func(s *server.Server) {
 		s.ConfigPath = configPath
-		s.TLSListenAddr = LOCAL_BIND_ADDR
+		s.TLSListenAddr = LocalBindAddr
 	})
 	ensureTLSPortIsReady(t, proxy.TLSListenAddr)
 
