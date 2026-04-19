@@ -338,8 +338,7 @@ func (s *Server) discoverModulesFromUpstream(ctx context.Context, upstream upstr
 		return nil, fmt.Errorf("request module list: %w", err)
 	}
 
-	modules := make([]string, 0)
-	seenSeparator := false
+	lines := make([]string, 0)
 	for {
 		if s.ReadTimeout > 0 {
 			_ = conn.SetReadDeadline(time.Now().Add(s.ReadTimeout))
@@ -349,25 +348,19 @@ func (s *Server) discoverModulesFromUpstream(ctx context.Context, upstream upstr
 			return nil, fmt.Errorf("read module list: %w", err)
 		}
 		line = strings.TrimSuffix(line, string(lineFeed))
-		if line == strings.TrimSuffix(string(RsyncdExit), string(lineFeed)) {
+		if strings.HasPrefix(line, string(RsyncdVersionPrefix)) {
 			break
 		}
-		if line == "" {
-			seenSeparator = true
-			continue
-		}
+		lines = append(lines, line)
+	}
 
-		name := ""
-		if idx := strings.IndexByte(line, '\t'); idx >= 0 {
-			name = strings.TrimRight(line[:idx], " ")
-		} else if seenSeparator && !strings.ContainsAny(line, " \t") {
-			// rsync-proxy lists modules as bare names without comments.
-			name = line
+	modules := make([]string, 0, len(lines))
+	for i := len(lines) - 1; i >= 0; i-- {
+		fields := strings.Fields(lines[i])
+		if len(fields) == 0 {
+			break
 		}
-		if name == "" {
-			continue
-		}
-		modules = append(modules, name)
+		modules = append(modules, fields[0])
 	}
 	sort.Strings(modules)
 	return modules, nil

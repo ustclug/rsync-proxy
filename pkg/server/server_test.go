@@ -449,3 +449,33 @@ func TestDiscoverModulesFromProxyStyleListing(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"bar", "foo"}, modules)
 }
+
+func TestDiscoverModulesFromTrailingModuleBlock(t *testing.T) {
+	upstream := rsync.NewServer(func(conn *rsync.Conn) {
+		defer conn.Close()
+
+		line, err := conn.ReadLine()
+		require.NoError(t, err)
+		require.Equal(t, string(RsyncdServerVersion), line)
+
+		_, err = conn.Write(RsyncdServerVersion)
+		require.NoError(t, err)
+
+		line, err = conn.ReadLine()
+		require.NoError(t, err)
+		require.Equal(t, "\n", line)
+
+		_, err = conn.Write([]byte("Welcome to upstream\nMirror notice\n\nfoo comment\nbar\n@RSYNCD: EXIT\n"))
+		require.NoError(t, err)
+	})
+	upstream.Start()
+	defer upstream.Close()
+
+	srv := New()
+	srv.ReadTimeout = time.Second
+	srv.WriteTimeout = time.Second
+
+	modules, err := srv.DiscoverModules(upstream.Listener.Addr().String())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"bar", "foo"}, modules)
+}
