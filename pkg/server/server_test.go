@@ -10,12 +10,14 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/ustclug/rsync-proxy/pkg/queue"
 	"github.com/ustclug/rsync-proxy/test/fake/rsync"
 )
 
@@ -92,8 +94,9 @@ func TestMotdFromServer(t *testing.T) {
 	defer fakeRsync.Close()
 
 	srv.modules = map[string][]Target{
-		"fake": {{Addr: fakeRsync.Listener.Addr().String()}},
+		"fake": {{Upstream: "u1", Addr: fakeRsync.Listener.Addr().String()}},
 	}
+	srv.upstreamQueues = map[string]*queue.Queue{"u1": queue.New(0, 0)}
 
 	r := require.New(t)
 
@@ -134,8 +137,9 @@ func TestClientReadTimeout(t *testing.T) {
 	defer fakeRsync.Close()
 
 	srv.modules = map[string][]Target{
-		"fake": {{Addr: fakeRsync.Listener.Addr().String()}},
+		"fake": {{Upstream: "u1", Addr: fakeRsync.Listener.Addr().String()}},
 	}
+	srv.upstreamQueues = map[string]*queue.Queue{"u1": queue.New(0, 0)}
 
 	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())
 	r.NoError(err)
@@ -191,8 +195,9 @@ func TestTLSRsyncListener(t *testing.T) {
 	defer fakeRsync.Close()
 
 	srv.modules = map[string][]Target{
-		"fake": {{Addr: fakeRsync.Listener.Addr().String()}},
+		"fake": {{Upstream: "u1", Addr: fakeRsync.Listener.Addr().String()}},
 	}
+	srv.upstreamQueues = map[string]*queue.Queue{"u1": queue.New(0, 0)}
 
 	pool := x509.NewCertPool()
 	certPEM, err := os.ReadFile(tlsFiles.certPath)
@@ -301,8 +306,9 @@ func TestStatusIncludesSelectedUpstream(t *testing.T) {
 
 	upstreamAddr = fakeRsync.Listener.Addr().String()
 	srv.modules = map[string][]Target{
-		"fake": {{Addr: upstreamAddr}},
+		"fake": {{Upstream: "u1", Addr: upstreamAddr}},
 	}
+	srv.upstreamQueues = map[string]*queue.Queue{"u1": queue.New(0, 0)}
 
 	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())
 	require.NoError(t, err)
@@ -318,6 +324,151 @@ func TestStatusIncludesSelectedUpstream(t *testing.T) {
 	}, time.Second, 10*time.Millisecond)
 
 	wg.Done()
+}
+
+func TestPerUpstreamQueueIsolation(t *testing.T) {
+	srv := startServer(t)
+	defer srv.Close()
+
+	var (
+		firstReady sync.WaitGroup
+		release1   sync.WaitGroup
+		release2   sync.WaitGroup
+		started1   atomic.Int32
+		started2   atomic.Int32
+	)
+	firstReady.Add(1)
+	release1.Add(1)
+	release2.Add(1)
+
+	upstream1 := rsync.NewServer(func(conn *rsync.Conn) {
+		defer conn.Close()
+		_, _, err := doServerHandshake(conn, RsyncdServerVersion)
+		require.NoError(t, err)
+		if started1.Add(1) == 1 {
+			firstReady.Done()
+			release1.Wait()
+		}
+	})
+	upstream1.Start()
+	defer upstream1.Close()
+
+	upstream2 := rsync.NewServer(func(conn *rsync.Conn) {
+		defer conn.Close()
+		_, _, err := doServerHandshake(conn, RsyncdServerVersion)
+		require.NoError(t, err)
+		started2.Add(1)
+		release2.Wait()
+	})
+	upstream2.Start()
+	defer upstream2.Close()
+
+	srv.modules = map[string][]Target{
+		"same-a": {{Upstream: "u1", Addr: upstream1.Listener.Addr().String()}},
+		"same-b": {{Upstream: "u1", Addr: upstream1.Listener.Addr().String()}},
+		"other":  {{Upstream: "u2", Addr: upstream2.Listener.Addr().String()}},
+	}
+	srv.upstreamQueues = map[string]*queue.Queue{
+		"u1": queue.New(1, 1),
+		"u2": queue.New(1, 1),
+	}
+
+	client1Raw, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	require.NoError(t, err)
+	client1 := rsync.NewConn(client1Raw)
+	defer client1.Close()
+	_, err = doClientHandshake(client1, RsyncdServerVersion, "same-a")
+	require.NoError(t, err)
+
+	firstReady.Wait()
+
+	client2Raw, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	require.NoError(t, err)
+	client2 := rsync.NewConn(client2Raw)
+	defer client2.Close()
+	_, err = doClientHandshake(client2, RsyncdServerVersion, "same-b")
+	require.NoError(t, err)
+
+	queuedLine, err := client2.ReadLine()
+	require.NoError(t, err)
+	assert.Contains(t, queuedLine, "Upstream u1 has reached")
+	queuedPos, err := client2.ReadLine()
+	require.NoError(t, err)
+	assert.Contains(t, queuedPos, "Your position: 1")
+
+	client3Raw, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	require.NoError(t, err)
+	client3 := rsync.NewConn(client3Raw)
+	defer client3.Close()
+	_, err = doClientHandshake(client3, RsyncdServerVersion, "other")
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		return started2.Load() == 1
+	}, time.Second, 10*time.Millisecond)
+
+	release2.Done()
+	release1.Done()
+
+	require.Eventually(t, func() bool {
+		return started1.Load() == 2
+	}, time.Second, 10*time.Millisecond)
+}
+
+func TestQueueFullRejectsConnection(t *testing.T) {
+	srv := startServer(t)
+	defer srv.Close()
+
+	var release sync.WaitGroup
+	release.Add(1)
+
+	upstream := rsync.NewServer(func(conn *rsync.Conn) {
+		defer conn.Close()
+		_, _, err := doServerHandshake(conn, RsyncdServerVersion)
+		require.NoError(t, err)
+		release.Wait()
+	})
+	upstream.Start()
+	defer upstream.Close()
+
+	srv.modules = map[string][]Target{
+		"fake": {{Upstream: "u1", Addr: upstream.Listener.Addr().String()}},
+	}
+	srv.upstreamQueues = map[string]*queue.Queue{"u1": queue.New(1, 1)}
+
+	client1Raw, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	require.NoError(t, err)
+	client1 := rsync.NewConn(client1Raw)
+	defer client1.Close()
+	_, err = doClientHandshake(client1, RsyncdServerVersion, "fake")
+	require.NoError(t, err)
+
+	client2Raw, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	require.NoError(t, err)
+	client2 := rsync.NewConn(client2Raw)
+	defer client2.Close()
+	_, err = doClientHandshake(client2, RsyncdServerVersion, "fake")
+	require.NoError(t, err)
+	_, err = client2.ReadLine()
+	require.NoError(t, err)
+	_, err = client2.ReadLine()
+	require.NoError(t, err)
+
+	client3Raw, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	require.NoError(t, err)
+	client3 := rsync.NewConn(client3Raw)
+	defer client3.Close()
+	_, err = doClientHandshake(client3, RsyncdServerVersion, "fake")
+	require.NoError(t, err)
+
+	line, err := client3.ReadLine()
+	require.NoError(t, err)
+	assert.Contains(t, line, "Server queue is full")
+	exit, err := client3.ReadLine()
+	require.NoError(t, err)
+	assert.Equal(t, string(RsyncdExit), exit)
+
+	release.Done()
 }
 
 func TestStartupFailsWhenModuleDiscoveryFails(t *testing.T) {

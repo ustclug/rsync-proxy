@@ -73,6 +73,7 @@ func (c *ConnInfo) MarshalJSON() ([]byte, error) {
 }
 
 type Target struct {
+	Upstream         string
 	Addr             string
 	UseProxyProtocol bool
 }
@@ -82,6 +83,8 @@ type upstreamConfig struct {
 	Target          Target
 	Modules         []string
 	DiscoverModules bool
+	MaxActiveConns  int
+	MaxQueuedConns  int
 }
 
 type Server struct {
@@ -109,7 +112,7 @@ type Server struct {
 	tlsCertificate *tls.Certificate
 	tlsConfig      *tls.Config
 
-	queue *queue.Queue
+	upstreamQueues map[string]*queue.Queue
 
 	activeConnCount atomic.Int64
 	connIndex       atomic.Uint32
@@ -144,10 +147,10 @@ func New() *Server {
 				return &buf
 			},
 		},
-		dialer:    net.Dialer{}, // customize keep alive interval?
-		accessLog: accessLog,
-		errorLog:  errorLog,
-		queue:     queue.New(0, 0),
+		dialer:         net.Dialer{}, // customize keep alive interval?
+		accessLog:      accessLog,
+		errorLog:       errorLog,
+		upstreamQueues: make(map[string]*queue.Queue),
 	}
 	s.tlsConfig = &tls.Config{GetCertificate: s.getTLSCertificate}
 	return s
@@ -183,8 +186,6 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 		tlsCertificate = &cert
 	}
 
-	s.queue.SetMax(c.Proxy.MaxActiveConns, c.Proxy.MaxQueuedConns)
-
 	upstreams := make([]upstreamConfig, 0, len(c.Upstreams))
 	upstreamNames := make([]string, 0, len(c.Upstreams))
 	for upstreamName := range c.Upstreams {
@@ -203,9 +204,11 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 		}
 		upstreams = append(upstreams, upstreamConfig{
 			Name:            upstreamName,
-			Target:          Target{Addr: addr, UseProxyProtocol: v.UseProxyProtocol},
+			Target:          Target{Upstream: upstreamName, Addr: addr, UseProxyProtocol: v.UseProxyProtocol},
 			Modules:         append([]string(nil), v.Modules...),
 			DiscoverModules: v.DiscoverModules,
+			MaxActiveConns:  v.MaxActiveConns,
+			MaxQueuedConns:  v.MaxQueuedConns,
 		})
 	}
 
@@ -238,6 +241,7 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 	s.Motd = c.Proxy.Motd
 	s.modules = modules
 	s.upstreams = resolvedUpstreams
+	s.upstreamQueues = s.updateUpstreamQueuesLocked(resolvedUpstreams)
 	s.tlsCertificate = tlsCertificate
 	return nil
 }
@@ -254,9 +258,32 @@ func resolveUpstreams(upstreams []upstreamConfig, discovered map[string][]string
 			Target:          upstream.Target,
 			Modules:         modules,
 			DiscoverModules: upstream.DiscoverModules,
+			MaxActiveConns:  upstream.MaxActiveConns,
+			MaxQueuedConns:  upstream.MaxQueuedConns,
 		})
 	}
 	return resolved
+}
+
+func (s *Server) updateUpstreamQueuesLocked(upstreams []upstreamConfig) map[string]*queue.Queue {
+	queues := make(map[string]*queue.Queue, len(upstreams))
+	for _, upstream := range upstreams {
+		q, ok := s.upstreamQueues[upstream.Name]
+		if !ok {
+			q = queue.New(upstream.MaxActiveConns, upstream.MaxQueuedConns)
+		} else {
+			q.SetMax(upstream.MaxActiveConns, upstream.MaxQueuedConns)
+		}
+		queues[upstream.Name] = q
+	}
+	return queues
+}
+
+func (s *Server) queueForUpstream(name string) (*queue.Queue, bool) {
+	s.reloadLock.RLock()
+	defer s.reloadLock.RUnlock()
+	q, ok := s.upstreamQueues[name]
+	return q, ok
 }
 
 func buildModuleTargets(upstreams []upstreamConfig) map[string][]Target {
@@ -286,7 +313,7 @@ func (s *Server) ListUpstreamModules(name string) ([]string, error) {
 func (s *Server) DiscoverModules(addr string) ([]string, error) {
 	modules, err := s.discoverModulesFromUpstream(context.Background(), upstreamConfig{
 		Name:   addr,
-		Target: Target{Addr: addr},
+		Target: Target{Upstream: addr, Addr: addr},
 	})
 	if err != nil {
 		return nil, err
@@ -477,39 +504,6 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 		}
 	}
 
-	chStatus := s.queue.Acquire()
-	status := <-chStatus
-	if !status.Ok() {
-		// Send initial queuing notice
-		msg := fmt.Sprintf("Server has reached the maximum number of %d connections. Your request is being queued.\n", s.queue.GetMax())
-		msg += fmt.Sprintf("Your position: %d, Total queued: %d\n", status.Index+1, status.Max)
-		_, err = writeWithTimeout(downConn, []byte(msg), writeTimeout)
-		if err != nil {
-			s.queue.Abort(chStatus)
-			return fmt.Errorf("send queue notice to client %s: %w", addr, err)
-		}
-
-	queuing:
-		for !status.Ok() {
-			// Wait until status update, or repeat message after some time
-			select {
-			case status = <-chStatus:
-				if status.Ok() {
-					break queuing
-				}
-			case <-time.After(1 * time.Minute):
-			}
-
-			msg := fmt.Sprintf("Your position: %d, Total queued: %d\n", status.Index+1, status.Max)
-			_, err = writeWithTimeout(downConn, []byte(msg), writeTimeout)
-			if err != nil {
-				s.queue.Abort(chStatus)
-				return fmt.Errorf("send queue notice to client %s: %w", addr, err)
-			}
-		}
-	}
-	defer s.queue.Release()
-
 	if len(data) == 1 { // single '\n'
 		s.accessLog.F("client %s requests listing all modules", addr)
 		return s.listAllModules(downConn)
@@ -535,6 +529,48 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	useProxyProtocol := target.UseProxyProtocol
 	info.UpstreamAddr = upstreamAddr
 	s.connInfo.Store(index, &info)
+
+	upstreamQueue, ok := s.queueForUpstream(target.Upstream)
+	if !ok {
+		return fmt.Errorf("no queue configured for upstream %s", target.Upstream)
+	}
+
+	chStatus := upstreamQueue.Acquire()
+	status := <-chStatus
+	if status.QueueFull() {
+		_, _ = writeWithTimeout(downConn, []byte("Server queue is full for this upstream. Please retry later.\n"), writeTimeout)
+		_, _ = writeWithTimeout(downConn, RsyncdExit, writeTimeout)
+		return nil
+	}
+	if !status.Ok() {
+		// Queueing is isolated per upstream.
+		msg := fmt.Sprintf("Upstream %s has reached the maximum number of %d connections. Your request is being queued.\n", target.Upstream, upstreamQueue.GetMax())
+		msg += fmt.Sprintf("Your position: %d, Total queued: %d\n", status.Index+1, status.Max)
+		_, err = writeWithTimeout(downConn, []byte(msg), writeTimeout)
+		if err != nil {
+			upstreamQueue.Abort(chStatus)
+			return fmt.Errorf("send queue notice to client %s: %w", addr, err)
+		}
+
+	queuing:
+		for !status.Ok() {
+			select {
+			case status = <-chStatus:
+				if status.Ok() {
+					break queuing
+				}
+			case <-time.After(1 * time.Minute):
+			}
+
+			msg := fmt.Sprintf("Your position: %d, Total queued: %d\n", status.Index+1, status.Max)
+			_, err = writeWithTimeout(downConn, []byte(msg), writeTimeout)
+			if err != nil {
+				upstreamQueue.Abort(chStatus)
+				return fmt.Errorf("send queue notice to client %s: %w", addr, err)
+			}
+		}
+	}
+	defer upstreamQueue.Release()
 
 	conn, err := s.dialer.DialContext(ctx, "tcp", upstreamAddr)
 	if err != nil {

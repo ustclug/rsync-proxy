@@ -13,6 +13,8 @@ type Upstream struct {
 	Modules          []string `toml:"modules"`
 	DiscoverModules  bool     `toml:"discover_modules"`
 	UseProxyProtocol bool     `toml:"use_proxy_protocol"`
+	MaxActiveConns   int      `toml:"max_active_connections"`
+	MaxQueuedConns   int      `toml:"max_queued_connections"`
 }
 
 type ProxySettings struct {
@@ -24,9 +26,6 @@ type ProxySettings struct {
 	ErrorLog    string `toml:"error_log"`
 	TLSCertFile string `toml:"tls_cert_file"`
 	TLSKeyFile  string `toml:"tls_key_file"`
-
-	MaxActiveConns int `toml:"max_active_connections"`
-	MaxQueuedConns int `toml:"max_queued_connections"`
 }
 
 type Config struct {

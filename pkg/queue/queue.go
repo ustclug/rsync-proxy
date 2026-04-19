@@ -8,7 +8,7 @@ type Queue struct {
 	max     int
 	current int
 	list    []queueItem
-	listMax int // not implemented
+	listMax int
 
 	mu sync.Mutex
 }
@@ -20,10 +20,15 @@ type queueItem struct {
 type Status struct {
 	Index int
 	Max   int
+	Full  bool
 }
 
 func (s Status) Ok() bool {
 	return s.Index < 0
+}
+
+func (s Status) QueueFull() bool {
+	return s.Full
 }
 
 func New(max, maxQueued int) *Queue {
@@ -48,11 +53,15 @@ func (q *Queue) Acquire() <-chan Status {
 	defer q.mu.Unlock()
 
 	ch := make(chan Status, 1)
-	if q.current < q.max || q.max == 0 { // q.max == 0 => no limit
+	switch {
+	case q.current < q.max || q.max == 0: // q.max == 0 => no limit
 		q.current++
 		ch <- q.makeOkStatus()
 		close(ch)
-	} else { // q.current >= q.max
+	case q.listMax > 0 && len(q.list) >= q.listMax:
+		ch <- Status{Full: true}
+		close(ch)
+	default: // q.current >= q.max
 		q.list = append(q.list, queueItem{ch})
 		surplus := q.current - q.max
 		ch <- Status{Index: surplus + len(q.list) - 1, Max: surplus + len(q.list)}

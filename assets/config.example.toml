@@ -8,14 +8,14 @@ access_log = "/var/log/rsync-proxy/access.log"
 error_log = "/var/log/rsync-proxy/error.log"
 tls_cert_file = "/etc/rsync-proxy/tls/server.crt"
 tls_key_file = "/etc/rsync-proxy/tls/server.key"
-max_active_connections = 60
-max_queued_connections = 60
 
 motd = "Served by rsync-proxy (https://github.com/ustclug/rsync-proxy)"
 
 [upstreams.u1]
 address = "127.0.0.1:1234"
 modules = ["foo"]
+max_active_connections = 60
+max_queued_connections = 60
 
 [upstreams.u1_auto]
 address = "127.0.0.1:1234"
