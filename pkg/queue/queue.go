@@ -20,15 +20,8 @@ type queueItem struct {
 type Status struct {
 	Index int
 	Max   int
+	Ok    bool
 	Full  bool
-}
-
-func (s Status) Ok() bool {
-	return s.Index < 0
-}
-
-func (s Status) QueueFull() bool {
-	return s.Full
 }
 
 func New(max, maxQueued int) *Queue {
@@ -105,11 +98,15 @@ func (q *Queue) Abort(ch <-chan Status) {
 func (q *Queue) broadcastStatus() {
 	surplus := q.current - q.max
 	for i := range q.list {
-		q.list[i].ch <- Status{Index: surplus + i, Max: surplus + len(q.list)}
+		if surplus+i < 0 {
+			q.list[i].ch <- q.makeOkStatus()
+		} else {
+			q.list[i].ch <- Status{Index: surplus + i, Max: surplus + len(q.list)}
+		}
 	}
 }
 
 // Must be called with q.mu held, otherwise race condition may occur when reading q.list
 func (q *Queue) makeOkStatus() Status {
-	return Status{Index: -1, Max: len(q.list)}
+	return Status{Ok: true, Max: len(q.list)}
 }

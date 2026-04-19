@@ -180,6 +180,6 @@ max_queued_connections = 4
 
 	statusCh := q.Acquire()
 	status := <-statusCh
-	assert.True(t, status.Ok())
+	assert.True(t, status.Ok)
 	q.Release()
 }

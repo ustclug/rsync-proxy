@@ -537,12 +537,12 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 
 	chStatus := upstreamQueue.Acquire()
 	status := <-chStatus
-	if status.QueueFull() {
+	if status.Full {
 		_, _ = writeWithTimeout(downConn, []byte("Server queue is full for this upstream. Please retry later.\n"), writeTimeout)
 		_, _ = writeWithTimeout(downConn, RsyncdExit, writeTimeout)
 		return nil
 	}
-	if !status.Ok() {
+	if !status.Ok {
 		// Queueing is isolated per upstream.
 		msg := fmt.Sprintf("Upstream %s has reached the maximum number of %d connections. Your request is being queued.\n", target.Upstream, upstreamQueue.GetMax())
 		msg += fmt.Sprintf("Your position: %d, Total queued: %d\n", status.Index+1, status.Max)
@@ -553,10 +553,10 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 		}
 
 	queuing:
-		for !status.Ok() {
+		for !status.Ok {
 			select {
 			case status = <-chStatus:
-				if status.Ok() {
+				if status.Ok {
 					break queuing
 				}
 			case <-time.After(1 * time.Minute):
