@@ -49,6 +49,32 @@ func NewModuleListServer(modules []string) *Server {
 	return NewModuleListServerWithMotd(modules, nil)
 }
 
+func NewModuleListServerWithProxyProtocol(modules []string) *Server {
+	return NewServer(func(conn *Conn) {
+		defer conn.Close()
+
+		line, err := conn.ReadLine()
+		if err != nil || !strings.HasPrefix(line, "PROXY ") {
+			return
+		}
+
+		if _, err := conn.ReadLine(); err != nil {
+			return
+		}
+		_, _ = conn.Write([]byte("@RSYNCD: 32.0 sha512 sha256 sha1 md5 md4\n"))
+
+		line, err = conn.ReadLine()
+		if err != nil || line != "\n" {
+			return
+		}
+
+		for _, module := range modules {
+			_, _ = conn.Write([]byte(module + "\t" + strings.ToUpper(module) + "\n"))
+		}
+		_, _ = conn.Write([]byte("@RSYNCD: EXIT\n"))
+	})
+}
+
 func NewModuleListServerWithMotd(modules []string, motd []string) *Server {
 	return NewServer(func(conn *Conn) {
 		defer conn.Close()

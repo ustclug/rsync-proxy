@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net"
 	"time"
 )
@@ -11,6 +12,25 @@ func writeWithTimeout(conn net.Conn, buf []byte, timeout time.Duration) (n int, 
 	}
 	n, err = conn.Write(buf)
 	return
+}
+
+func writeProxyProtocolHeader(conn net.Conn, sourceAddr, destAddr net.Addr, timeout time.Duration) error {
+	sourceTCP, ok := sourceAddr.(*net.TCPAddr)
+	if !ok {
+		return fmt.Errorf("invalid source address type %T", sourceAddr)
+	}
+	destTCP, ok := destAddr.(*net.TCPAddr)
+	if !ok {
+		return fmt.Errorf("invalid destination address type %T", destAddr)
+	}
+
+	ipVersion := "TCP4"
+	if sourceTCP.IP.To4() == nil {
+		ipVersion = "TCP6"
+	}
+	proxyHeader := fmt.Sprintf("PROXY %s %s %s %d %d\r\n", ipVersion, sourceTCP.IP.String(), destTCP.IP.String(), sourceTCP.Port, destTCP.Port)
+	_, err := writeWithTimeout(conn, []byte(proxyHeader), timeout)
+	return err
 }
 
 // readLine will read as much as it can until the last read character is a newline character.

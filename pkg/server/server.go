@@ -311,9 +311,13 @@ func (s *Server) ListUpstreamModules(name string) ([]string, error) {
 }
 
 func (s *Server) DiscoverModules(addr string) ([]string, error) {
+	return s.DiscoverModulesWithProxyProtocol(addr, false)
+}
+
+func (s *Server) DiscoverModulesWithProxyProtocol(addr string, useProxyProtocol bool) ([]string, error) {
 	modules, err := s.discoverModulesFromUpstream(context.Background(), upstreamConfig{
 		Name:   addr,
-		Target: Target{Upstream: addr, Addr: addr},
+		Target: Target{Upstream: addr, Addr: addr, UseProxyProtocol: useProxyProtocol},
 	})
 	if err != nil {
 		return nil, err
@@ -353,6 +357,11 @@ func (s *Server) discoverModulesFromUpstream(ctx context.Context, upstream upstr
 		return nil, fmt.Errorf("dial: %w", err)
 	}
 	defer conn.Close()
+	if upstream.Target.UseProxyProtocol {
+		if err := writeProxyProtocolHeader(conn, conn.LocalAddr(), conn.RemoteAddr(), s.WriteTimeout); err != nil {
+			return nil, fmt.Errorf("send proxy protocol header: %w", err)
+		}
+	}
 
 	reader := bufio.NewReaderSize(conn, TCPBufferSize)
 	if _, err := writeWithTimeout(conn, RsyncdServerVersion, s.WriteTimeout); err != nil {
@@ -475,7 +484,6 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 
 	addr := downConn.RemoteAddr().String()
 	ip := downConn.RemoteAddr().(*net.TCPAddr).IP.String()
-	port := downConn.RemoteAddr().(*net.TCPAddr).Port
 
 	writeTimeout := s.WriteTimeout
 	readTimeout := s.ReadTimeout
@@ -585,18 +593,8 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	upConn := conn.(*net.TCPConn)
 	defer upConn.Close()
 	upIp := upConn.RemoteAddr().(*net.TCPAddr).IP.String()
-	upPort := upConn.RemoteAddr().(*net.TCPAddr).Port
-
 	if useProxyProtocol {
-		var IPVersion string
-		if strings.Contains(ip, ":") {
-			IPVersion = "TCP6"
-		} else {
-			IPVersion = "TCP4"
-		}
-		proxyHeader := fmt.Sprintf("PROXY %s %s %s %d %d\r\n", IPVersion, ip, upIp, port, upPort)
-		_, err = writeWithTimeout(upConn, []byte(proxyHeader), writeTimeout)
-		if err != nil {
+		if err := writeProxyProtocolHeader(upConn, downConn.RemoteAddr(), upConn.RemoteAddr(), writeTimeout); err != nil {
 			return fmt.Errorf("send proxy protocol header to upstream %s: %w", upIp, err)
 		}
 	}

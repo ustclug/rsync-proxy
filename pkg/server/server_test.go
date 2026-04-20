@@ -571,6 +571,20 @@ func TestDiscoverModules(t *testing.T) {
 	assert.Equal(t, []string{"bar", "foo"}, modules)
 }
 
+func TestDiscoverModulesWithProxyProtocol(t *testing.T) {
+	upstream := rsync.NewModuleListServerWithProxyProtocol([]string{"bar", "foo"})
+	upstream.Start()
+	defer upstream.Close()
+
+	srv := New()
+	srv.ReadTimeout = time.Second
+	srv.WriteTimeout = time.Second
+
+	modules, err := srv.DiscoverModulesWithProxyProtocol(upstream.Listener.Addr().String(), true)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"bar", "foo"}, modules)
+}
+
 func TestDiscoverModulesFromProxyStyleListing(t *testing.T) {
 	upstream := rsync.NewServer(func(conn *rsync.Conn) {
 		defer conn.Close()

@@ -162,6 +162,28 @@ discover_modules = true
 	assert.NotContains(t, s.modules, "Mirror")
 }
 
+func TestReadConfigDiscoversModulesWithProxyProtocol(t *testing.T) {
+	upstream := rsync.NewModuleListServerWithProxyProtocol([]string{"bar", "foo"})
+	upstream.Start()
+	defer upstream.Close()
+
+	s := New()
+	s.ReadTimeout = time.Second
+	s.WriteTimeout = time.Second
+	configContent := `
+[upstreams.u1]
+address = "` + upstream.Listener.Addr().String() + `"
+discover_modules = true
+use_proxy_protocol = true
+`
+	err := s.ReadConfig(strings.NewReader(configContent), true)
+	require.NoError(t, err, "load config")
+	assert.Equal(t, map[string][]Target{
+		"bar": {{Upstream: "u1", Addr: upstream.Listener.Addr().String(), UseProxyProtocol: true}},
+		"foo": {{Upstream: "u1", Addr: upstream.Listener.Addr().String(), UseProxyProtocol: true}},
+	}, s.modules)
+}
+
 func TestReadConfigLoadsPerUpstreamQueueLimits(t *testing.T) {
 	s := New()
 	configContent := `

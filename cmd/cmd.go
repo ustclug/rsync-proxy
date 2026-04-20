@@ -147,6 +147,7 @@ func newReloadCmd(s *server.Server) *cobra.Command {
 }
 
 func newUpstreamModulesCmd(s *server.Server) *cobra.Command {
+	var useProxyProtocol bool
 	c := &cobra.Command{
 		Use:   "upstream-modules <upstream>",
 		Short: "Print modules for a configured upstream, or rsync URL (with port)",
@@ -168,7 +169,7 @@ func newUpstreamModulesCmd(s *server.Server) *cobra.Command {
 				if parsed.Path != "" && parsed.Path != "/" {
 					return fmt.Errorf("invalid rsync url: path is not allowed")
 				}
-				modules, err := s.DiscoverModules(parsed.Host)
+				modules, err := s.DiscoverModulesWithProxyProtocol(parsed.Host, useProxyProtocol)
 				if err != nil {
 					return err
 				}
@@ -191,6 +192,7 @@ func newUpstreamModulesCmd(s *server.Server) *cobra.Command {
 			return nil
 		},
 	}
+	c.Flags().BoolVar(&useProxyProtocol, "proxy-protocol", false, "Send a PROXY protocol header when discovering modules from an rsync URL")
 	return c
 }
 
