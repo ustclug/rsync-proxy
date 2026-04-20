@@ -154,7 +154,7 @@ func newUpstreamModulesCmd(s *server.Server) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			upstreamModules := args[0]
 			if upstreamModules == "" {
-				return fmt.Errorf("Empty upstream spec")
+				return fmt.Errorf("empty upstream spec")
 			}
 
 			if strings.HasPrefix(upstreamModules, "rsync://") {
