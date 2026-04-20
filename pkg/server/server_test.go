@@ -548,13 +548,37 @@ func TestListUpstreamModules(t *testing.T) {
 	}
 	srv.reloadLock.Unlock()
 
-	modules, err := srv.ListUpstreamModules("u1")
+	modules, err := srv.ListUpstreamModules("u1", false)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"bar", "foo"}, modules)
 
-	_, err = srv.ListUpstreamModules("missing")
+	_, err = srv.ListUpstreamModules("missing", false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown upstream")
+}
+
+func TestListUpstreamModulesForceDiscover(t *testing.T) {
+	upstream := rsync.NewModuleListServer([]string{"bar", "foo"})
+	upstream.Start()
+	defer upstream.Close()
+
+	srv := New()
+	srv.ReadTimeout = time.Second
+	srv.WriteTimeout = time.Second
+	srv.reloadLock.Lock()
+	srv.upstreams = []upstreamConfig{
+		{
+			Name:            "u1",
+			Target:          Target{Upstream: "u1", Addr: upstream.Listener.Addr().String()},
+			Modules:         []string{"stale"},
+			DiscoverModules: false,
+		},
+	}
+	srv.reloadLock.Unlock()
+
+	modules, err := srv.ListUpstreamModules("u1", true)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"bar", "foo"}, modules)
 }
 
 func TestDiscoverModules(t *testing.T) {

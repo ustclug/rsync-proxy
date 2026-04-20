@@ -296,16 +296,24 @@ func buildModuleTargets(upstreams []upstreamConfig) map[string][]Target {
 	return modules
 }
 
-func (s *Server) ListUpstreamModules(name string) ([]string, error) {
+func (s *Server) ListUpstreamModules(name string, forceDiscover bool) ([]string, error) {
 	s.reloadLock.RLock()
 	defer s.reloadLock.RUnlock()
 	for _, upstream := range s.upstreams {
 		if upstream.Name != name {
 			continue
 		}
-		modules := append([]string(nil), upstream.Modules...)
-		sort.Strings(modules)
-		return modules, nil
+		if forceDiscover {
+			modules, err := s.discoverModulesFromUpstream(context.Background(), upstream)
+			if err != nil {
+				return nil, fmt.Errorf("discover modules from upstream %s (%s): %w", upstream.Name, upstream.Target.Addr, err)
+			}
+			return modules, nil
+		} else {
+			modules := append([]string(nil), upstream.Modules...)
+			sort.Strings(modules)
+			return modules, nil
+		}
 	}
 	return nil, fmt.Errorf("unknown upstream: %s", name)
 }

@@ -148,6 +148,7 @@ func newReloadCmd(s *server.Server) *cobra.Command {
 
 func newUpstreamModulesCmd(s *server.Server) *cobra.Command {
 	var useProxyProtocol bool
+	var forceDiscover bool
 	c := &cobra.Command{
 		Use:   "upstream-modules <upstream>",
 		Short: "Print modules for a configured upstream, or rsync URL (with port)",
@@ -182,7 +183,7 @@ func newUpstreamModulesCmd(s *server.Server) *cobra.Command {
 			if err := s.ReadConfigFromFile(false); err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
-			modules, err := s.ListUpstreamModules(upstreamModules)
+			modules, err := s.ListUpstreamModules(upstreamModules, forceDiscover)
 			if err != nil {
 				return err
 			}
@@ -193,6 +194,7 @@ func newUpstreamModulesCmd(s *server.Server) *cobra.Command {
 		},
 	}
 	c.Flags().BoolVar(&useProxyProtocol, "proxy-protocol", false, "Send a PROXY protocol header when discovering modules from an rsync URL")
+	c.Flags().BoolVar(&forceDiscover, "force-discover", false, "Always try discover upstream modules")
 	return c
 }
 
