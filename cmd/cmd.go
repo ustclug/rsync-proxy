@@ -113,28 +113,48 @@ func printVersion(stdout io.Writer) error {
 	})
 }
 
-func New() *cobra.Command {
-	var (
-		reload          bool
-		version         bool
-		connections     bool
-		upstreamModules string
-	)
-
-	s := server.New()
-
+func newConnectionsCmd(s *server.Server) *cobra.Command {
 	c := &cobra.Command{
-		Use: "rsync-proxy",
+		Use:   "connections",
+		Short: "Show active connections",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if version {
-				return printVersion(cmd.OutOrStdout())
+			if err := s.ReadConfigFromFile(false); err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+			return SendConnectionsRequest(s.HTTPListenAddr, cmd.OutOrStdout(), cmd.ErrOrStderr())
+		},
+	}
+	return c
+}
+
+func newReloadCmd(s *server.Server) *cobra.Command {
+	c := &cobra.Command{
+		Use:   "reload",
+		Short: "Inform server to reload config",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := s.ReadConfigFromFile(false); err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+			return SendReloadRequest(s.HTTPListenAddr, cmd.OutOrStdout(), cmd.ErrOrStderr())
+		},
+	}
+	return c
+}
+
+func newUpstreamModulesCmd(s *server.Server) *cobra.Command {
+	c := &cobra.Command{
+		Use:   "upstream-modules <upstream>",
+		Short: "Print modules for a configured upstream, or rsync URL (with port)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			upstreamModules := args[0]
+			if upstreamModules == "" {
+				return fmt.Errorf("Empty upstream spec")
 			}
 
-			log.SetOutput(cmd.ErrOrStderr())
-			s.WriteTimeout = time.Minute
-			s.ReadTimeout = time.Minute
-
-			if upstreamModules != "" && strings.HasPrefix(upstreamModules, "rsync://") {
+			if strings.HasPrefix(upstreamModules, "rsync://") {
 				parsed, err := url.Parse(upstreamModules)
 				if err != nil {
 					return fmt.Errorf("parse rsync url: %w", err)
@@ -155,43 +175,68 @@ func New() *cobra.Command {
 				return nil
 			}
 
-			// For helper commands, we don't want to open log file as rw, to allow other users to use.
-			openLog := !reload && !connections && upstreamModules == ""
-			err := s.ReadConfigFromFile(openLog)
-			if err != nil {
+			if err := s.ReadConfigFromFile(false); err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
-			if reload {
-				return SendReloadRequest(s.HTTPListenAddr, cmd.OutOrStdout(), cmd.ErrOrStderr())
-			}
-			if connections {
-				return SendConnectionsRequest(s.HTTPListenAddr, cmd.OutOrStdout(), cmd.ErrOrStderr())
-			}
-			if upstreamModules != "" {
-				modules, err := s.ListUpstreamModules(upstreamModules)
-				if err != nil {
-					return err
-				}
-				for _, name := range modules {
-					_, _ = fmt.Fprintln(cmd.OutOrStdout(), name)
-				}
-				return nil
-			}
-
-			err = s.Listen()
+			modules, err := s.ListUpstreamModules(upstreamModules)
 			if err != nil {
 				return err
+			}
+			for _, name := range modules {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), name)
+			}
+			return nil
+		},
+	}
+	return c
+}
+
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print version and exit",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return printVersion(cmd.OutOrStdout())
+		},
+	}
+}
+
+func New() *cobra.Command {
+	var version bool
+
+	s := server.New()
+	s.WriteTimeout = time.Minute
+	s.ReadTimeout = time.Minute
+
+	c := &cobra.Command{
+		Use: "rsync-proxy",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if version {
+				return printVersion(cmd.OutOrStdout())
+			}
+
+			log.SetOutput(cmd.ErrOrStderr())
+			if err := s.ReadConfigFromFile(true); err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+
+			if err := s.Listen(); err != nil {
+				return fmt.Errorf("server listen: %w", err)
 			}
 			return s.Run()
 		},
 	}
-	flags := c.Flags()
-	flags.StringVarP(&s.ConfigPath, "config", "c", "/etc/rsync-proxy/config.toml", "Path to config file")
-	flags.BoolVar(&reload, "reload", false, "Inform server to reload config")
-	flags.BoolVarP(&version, "version", "V", false, "Print version and exit")
-	flags.BoolVar(&connections, "connections", false, "Show active connections")
-	flags.StringVar(&upstreamModules, "upstream-modules", "", "Print modules for a configured upstream, or rsync URL (with port)")
-	c.MarkFlagsMutuallyExclusive("reload", "connections", "upstream-modules")
+	pFlags := c.PersistentFlags()
+	pFlags.StringVarP(&s.ConfigPath, "config", "c", "/etc/rsync-proxy/config.toml", "Path to config file")
+	pFlags.BoolVarP(&version, "version", "V", false, "Print version and exit")
+
+	c.AddCommand(
+		newConnectionsCmd(s),
+		newReloadCmd(s),
+		newUpstreamModulesCmd(s),
+		newVersionCmd(),
+	)
 
 	return c
 }
