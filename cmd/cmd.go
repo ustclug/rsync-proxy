@@ -92,7 +92,7 @@ func SendConnectionsRequest(addr string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-func printVersion(stdout io.Writer) error {
+func printVersion(out io.Writer, pretty bool) error {
 	type Info struct {
 		GitCommit string
 		BuildDate string
@@ -101,7 +101,10 @@ func printVersion(stdout io.Writer) error {
 		Compiler  string
 		Platform  string
 	}
-	enc := json.NewEncoder(stdout)
+	enc := json.NewEncoder(out)
+	if pretty {
+		enc.SetIndent("", "  ")
+	}
 	return enc.Encode(Info{
 		GitCommit: GitCommit,
 		BuildDate: BuildDate,
@@ -192,14 +195,17 @@ func newUpstreamModulesCmd(s *server.Server) *cobra.Command {
 }
 
 func newVersionCmd() *cobra.Command {
-	return &cobra.Command{
+	var pretty bool
+	c := &cobra.Command{
 		Use:   "version",
 		Short: "Print version and exit",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return printVersion(cmd.OutOrStdout())
+			return printVersion(cmd.OutOrStdout(), pretty)
 		},
 	}
+	c.Flags().BoolVarP(&pretty, "pretty", "p", false, "Pretty-print JSON output")
+	return c
 }
 
 func New() *cobra.Command {
@@ -213,7 +219,7 @@ func New() *cobra.Command {
 		Use: "rsync-proxy",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if version {
-				return printVersion(cmd.OutOrStdout())
+				return printVersion(cmd.OutOrStdout(), false)
 			}
 
 			log.SetOutput(cmd.ErrOrStderr())
