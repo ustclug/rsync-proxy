@@ -339,7 +339,16 @@ func (s *Server) discoverConfiguredModules(ctx context.Context, upstreams []upst
 }
 
 func (s *Server) discoverModulesFromUpstream(ctx context.Context, upstream upstreamConfig) ([]string, error) {
-	conn, err := s.dialer.DialContext(ctx, "tcp", upstream.Target.Addr)
+	addr := upstream.Target.Addr
+	_, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		if addrErr, ok := err.(*net.AddrError); ok && addrErr.Err == "missing port in address" {
+			addr = net.JoinHostPort(addr, "873")
+		} else {
+			return nil, fmt.Errorf("invalid address: %w", err)
+		}
+	}
+	conn, err := s.dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
 	}
@@ -365,7 +374,7 @@ func (s *Server) discoverModulesFromUpstream(ctx context.Context, upstream upstr
 		return nil, fmt.Errorf("request module list: %w", err)
 	}
 
-	lines := make([]string, 0)
+	modules := make([]string, 0)
 	for {
 		if s.ReadTimeout > 0 {
 			_ = conn.SetReadDeadline(time.Now().Add(s.ReadTimeout))
@@ -378,14 +387,11 @@ func (s *Server) discoverModulesFromUpstream(ctx context.Context, upstream upstr
 		if strings.HasPrefix(line, string(RsyncdVersionPrefix)) {
 			break
 		}
-		lines = append(lines, line)
-	}
-
-	modules := make([]string, 0, len(lines))
-	for i := len(lines) - 1; i >= 0; i-- {
-		fields := strings.Fields(lines[i])
+		fields := strings.Fields(line)
 		if len(fields) == 0 {
-			break
+			// Empty line, previous content is more likely part of MOTD, so discard them
+			modules = modules[:0]
+			continue
 		}
 		modules = append(modules, fields[0])
 	}
