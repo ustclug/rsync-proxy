@@ -29,10 +29,10 @@ modules = ["bar2"]
 	err := s.ReadConfig(strings.NewReader(configContent), true)
 	require.NoError(t, err, "load config")
 	expectedMods := map[string][]Target{
-		"foo1": {{Addr: "127.0.0.1:1234", UseProxyProtocol: false}},
-		"foo2": {{Addr: "127.0.0.1:1234", UseProxyProtocol: false}},
-		"bar1": {{Addr: "127.0.0.1:1235", UseProxyProtocol: false}},
-		"bar2": {{Addr: "example.com:1235", UseProxyProtocol: false}},
+		"foo1": {{Upstream: "u1", Addr: "127.0.0.1:1234", UseProxyProtocol: false}},
+		"foo2": {{Upstream: "u1", Addr: "127.0.0.1:1234", UseProxyProtocol: false}},
+		"bar1": {{Upstream: "u2", Addr: "127.0.0.1:1235", UseProxyProtocol: false}},
+		"bar2": {{Upstream: "u3", Addr: "example.com:1235", UseProxyProtocol: false}},
 	}
 	assert.Equal(t, expectedMods, s.modules, "wrong modules")
 }
@@ -51,8 +51,8 @@ modules = ["foo1"]
 	err := s.ReadConfig(strings.NewReader(configContent), true)
 	require.NoError(t, err, "load config")
 	assert.Equal(t, []Target{
-		{Addr: "127.0.0.1:1234", UseProxyProtocol: false},
-		{Addr: "127.0.0.1:1235", UseProxyProtocol: false},
+		{Upstream: "u1", Addr: "127.0.0.1:1234", UseProxyProtocol: false},
+		{Upstream: "u2", Addr: "127.0.0.1:1235", UseProxyProtocol: false},
 	}, s.modules["foo1"], "wrong targets for duplicated module")
 }
 
@@ -134,8 +134,8 @@ discover_modules = true
 	err := s.ReadConfig(strings.NewReader(configContent), true)
 	require.NoError(t, err, "load config")
 	assert.Equal(t, map[string][]Target{
-		"bar": {{Addr: upstream.Listener.Addr().String(), UseProxyProtocol: false}},
-		"foo": {{Addr: upstream.Listener.Addr().String(), UseProxyProtocol: false}},
+		"bar": {{Upstream: "u1", Addr: upstream.Listener.Addr().String(), UseProxyProtocol: false}},
+		"foo": {{Upstream: "u1", Addr: upstream.Listener.Addr().String(), UseProxyProtocol: false}},
 	}, s.modules)
 }
 
@@ -155,9 +155,31 @@ discover_modules = true
 	err := s.ReadConfig(strings.NewReader(configContent), true)
 	require.NoError(t, err, "load config")
 	assert.Equal(t, map[string][]Target{
-		"bar": {{Addr: upstream.Listener.Addr().String(), UseProxyProtocol: false}},
-		"foo": {{Addr: upstream.Listener.Addr().String(), UseProxyProtocol: false}},
+		"bar": {{Upstream: "u1", Addr: upstream.Listener.Addr().String(), UseProxyProtocol: false}},
+		"foo": {{Upstream: "u1", Addr: upstream.Listener.Addr().String(), UseProxyProtocol: false}},
 	}, s.modules)
 	assert.NotContains(t, s.modules, "Welcome")
 	assert.NotContains(t, s.modules, "Mirror")
+}
+
+func TestReadConfigLoadsPerUpstreamQueueLimits(t *testing.T) {
+	s := New()
+	configContent := `
+[upstreams.u1]
+address = "127.0.0.1:1234"
+modules = ["foo"]
+max_active_connections = 3
+max_queued_connections = 4
+`
+	err := s.ReadConfig(strings.NewReader(configContent), true)
+	require.NoError(t, err, "load config")
+
+	q, ok := s.queueForUpstream("u1")
+	require.True(t, ok)
+	assert.Equal(t, 3, q.GetMax())
+
+	statusCh := q.Acquire()
+	status := <-statusCh
+	assert.True(t, status.Ok)
+	q.Release()
 }
