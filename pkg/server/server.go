@@ -362,15 +362,20 @@ func (s *Server) discoverConfiguredModules(ctx context.Context, upstreams []upst
 
 func (s *Server) discoverModulesFromUpstream(ctx context.Context, upstream upstreamConfig) ([]string, error) {
 	addr := upstream.Target.Addr
-	_, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		if addrErr, ok := err.(*net.AddrError); ok && addrErr.Err == "missing port in address" {
-			addr = net.JoinHostPort(addr, "873")
-		} else {
-			return nil, fmt.Errorf("invalid address: %w", err)
+	addrFam := "tcp"
+	if strings.HasPrefix(addr, "/") {
+		addrFam = "unix"
+	} else {
+		_, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			if addrErr, ok := err.(*net.AddrError); ok && addrErr.Err == "missing port in address" {
+				addr = net.JoinHostPort(addr, "873")
+			} else {
+				return nil, fmt.Errorf("invalid address: %w", err)
+			}
 		}
 	}
-	conn, err := s.dialer.DialContext(ctx, "tcp", addr)
+	conn, err := s.dialer.DialContext(ctx, addrFam, addr)
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
 	}

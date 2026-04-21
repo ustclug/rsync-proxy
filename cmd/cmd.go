@@ -164,13 +164,14 @@ func newUpstreamModulesCmd(s *server.Server) *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("parse rsync url: %w", err)
 				}
+				rsyncHost := parsed.Host
 				if parsed.Host == "" {
-					return fmt.Errorf("invalid rsync url: missing host")
-				}
-				if parsed.Path != "" && parsed.Path != "/" {
+					// Unix socket
+					rsyncHost = parsed.Path
+				} else if parsed.Path != "" && parsed.Path != "/" {
 					return fmt.Errorf("invalid rsync url: path is not allowed")
 				}
-				modules, err := s.DiscoverModulesWithProxyProtocol(parsed.Host, useProxyProtocol)
+				modules, err := s.DiscoverModulesWithProxyProtocol(rsyncHost, useProxyProtocol)
 				if err != nil {
 					return err
 				}

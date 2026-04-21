@@ -15,20 +15,33 @@ func writeWithTimeout(conn net.Conn, buf []byte, timeout time.Duration) (n int, 
 }
 
 func writeProxyProtocolHeader(conn net.Conn, sourceAddr, destAddr net.Addr, timeout time.Duration) error {
-	sourceTCP, ok := sourceAddr.(*net.TCPAddr)
-	if !ok {
+	var (
+		sourceIP, destIP     net.IP
+		sourcePort, destPort int
+	)
+	switch sourceTCP := sourceAddr.(type) {
+	case *net.TCPAddr:
+		sourceIP, sourcePort = sourceTCP.IP, sourceTCP.Port
+	case *net.UnixAddr:
+		sourceIP, sourcePort = net.IPv4(127, 0, 0, 1), 0
+	default:
 		return fmt.Errorf("invalid source address type %T", sourceAddr)
 	}
-	destTCP, ok := destAddr.(*net.TCPAddr)
-	if !ok {
+
+	switch destTCP := destAddr.(type) {
+	case *net.TCPAddr:
+		destIP, destPort = destTCP.IP, destTCP.Port
+	case *net.UnixAddr:
+		destIP, destPort = net.IPv4(127, 0, 0, 1), 0
+	default:
 		return fmt.Errorf("invalid destination address type %T", destAddr)
 	}
 
 	ipVersion := "TCP4"
-	if sourceTCP.IP.To4() == nil {
+	if sourceIP.To4() == nil {
 		ipVersion = "TCP6"
 	}
-	proxyHeader := fmt.Sprintf("PROXY %s %s %s %d %d\r\n", ipVersion, sourceTCP.IP.String(), destTCP.IP.String(), sourceTCP.Port, destTCP.Port)
+	proxyHeader := fmt.Sprintf("PROXY %s %s %s %d %d\r\n", ipVersion, sourceIP.String(), destIP.String(), sourcePort, destPort)
 	_, err := writeWithTimeout(conn, []byte(proxyHeader), timeout)
 	return err
 }
