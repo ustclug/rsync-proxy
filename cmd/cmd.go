@@ -236,6 +236,7 @@ func New() *cobra.Command {
 			}
 			return s.Run()
 		},
+		SilenceUsage: true,
 	}
 	pFlags := c.PersistentFlags()
 	pFlags.StringVarP(&s.ConfigPath, "config", "c", "/etc/rsync-proxy/config.toml", "Path to config file")
