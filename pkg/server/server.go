@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -203,22 +204,26 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 		upstreams = append(upstreams, upstreamConfig{
 			Name:            upstreamName,
 			Target:          Target{Upstream: upstreamName, Addr: addr, UseProxyProtocol: v.UseProxyProtocol},
-			Modules:         append([]string(nil), v.Modules...),
+			Modules:         slices.Clone(v.Modules),
 			DiscoverModules: v.DiscoverModules,
 			MaxActiveConns:  v.MaxActiveConns,
 			MaxQueuedConns:  v.MaxQueuedConns,
 		})
 	}
 
-	discoveredModules, err := s.discoverConfiguredModules(context.Background(), upstreams)
-	if err != nil {
-		return err
+	s.reloadLock.Lock()
+	defer s.reloadLock.Unlock()
+
+	var discoveredModules map[string][]string
+	if openLog {
+		var err error
+		discoveredModules, err = s.discoverConfiguredModules(context.Background(), upstreams)
+		if err != nil {
+			return err
+		}
 	}
 	resolvedUpstreams := resolveUpstreams(upstreams, discoveredModules)
 	modules := buildModuleTargets(resolvedUpstreams)
-
-	s.reloadLock.Lock()
-	defer s.reloadLock.Unlock()
 	if s.ListenAddr == "" {
 		s.ListenAddr = c.Proxy.Listen
 	}
@@ -247,9 +252,9 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 func resolveUpstreams(upstreams []upstreamConfig, discovered map[string][]string) []upstreamConfig {
 	resolved := make([]upstreamConfig, 0, len(upstreams))
 	for _, upstream := range upstreams {
-		modules := append([]string(nil), upstream.Modules...)
+		modules := slices.Clone(upstream.Modules)
 		if upstream.DiscoverModules {
-			modules = append([]string(nil), discovered[upstream.Name]...)
+			modules = slices.Clone(discovered[upstream.Name])
 		}
 		resolved = append(resolved, upstreamConfig{
 			Name:            upstream.Name,
