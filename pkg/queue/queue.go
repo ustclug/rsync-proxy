@@ -99,17 +99,10 @@ func (q *Queue) releaseFromHandle(h *internalHandle) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	// Drain the channel as Release() is called by the channel reader thread
-	go func() {
-		for range h.ch {
-		}
-	}()
-
 	// Remove this handle from queued list
 	newList := make([]queueItem, 0, len(q.queued))
 	for _, item := range q.queued {
 		if h.ch == item.ch {
-			close(h.ch)
 			continue
 		}
 		newList = append(newList, item)
@@ -154,6 +147,9 @@ func (h *internalHandle) release() {
 func (q *Queue) broadcastStatus() {
 	surplus := len(q.active) - q.max
 	for i := range q.queued {
-		q.queued[i].ch <- Status{Index: surplus + i, Max: surplus + len(q.queued)}
+		select {
+		case q.queued[i].ch <- Status{Index: surplus + i, Max: surplus + len(q.queued)}:
+		default:
+		}
 	}
 }
