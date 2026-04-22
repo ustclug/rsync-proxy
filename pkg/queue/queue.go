@@ -99,7 +99,14 @@ func (q *Queue) releaseFromHandle(h *internalHandle) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	// Remove this handle from queued queued
+	// Close and drain the channel
+	go func() {
+		close(h.ch)
+		for range h.ch {
+		}
+	}()
+
+	// Remove this handle from queued list
 	newList := make([]queueItem, 0, len(q.queued))
 	for _, item := range q.queued {
 		if h.ch == item.ch {
@@ -113,7 +120,7 @@ func (q *Queue) releaseFromHandle(h *internalHandle) {
 		return
 	}
 
-	// Remove this handle from active queued
+	// Remove this handle from active list
 	newList = make([]queueItem, 0, len(q.active))
 	for _, item := range q.active {
 		if h.ch == item.ch {
@@ -132,7 +139,6 @@ func (q *Queue) releaseFromHandle(h *internalHandle) {
 // Release signals that one job is done
 func (h *Handle) Release() {
 	h.i.release()
-
 }
 
 func (h *internalHandle) release() {
