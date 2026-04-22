@@ -10,21 +10,23 @@ import (
 func TestAcquireRejectsWhenQueueIsFull(t *testing.T) {
 	q := New(1, 1)
 
-	first := <-q.Acquire()
+	h1 := q.Acquire()
+	first := <-h1.C
 	require.True(t, first.Ok)
 
-	secondCh := q.Acquire()
-	second := <-secondCh
+	h2 := q.Acquire()
+	second := <-h2.C
 	assert.False(t, second.Ok)
 	assert.False(t, second.Full)
 	assert.Equal(t, 0, second.Index)
 	assert.Equal(t, 1, second.Max)
 
-	third := <-q.Acquire()
+	h3 := q.Acquire()
+	third := <-h3.C
 	assert.True(t, third.Full)
 	assert.False(t, third.Ok)
 
-	q.Release()
-	assert.True(t, (<-secondCh).Ok)
-	q.Release()
+	h1.Release()
+	assert.True(t, (<-h2.C).Ok)
+	h2.Release()
 }

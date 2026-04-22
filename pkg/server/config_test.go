@@ -200,8 +200,8 @@ max_queued_connections = 4
 	require.True(t, ok)
 	assert.Equal(t, 3, q.GetMax())
 
-	statusCh := q.Acquire()
-	status := <-statusCh
+	h := q.Acquire()
+	status := <-h.C
 	assert.True(t, status.Ok)
-	q.Release()
+	h.Release()
 }

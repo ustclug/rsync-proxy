@@ -1,12 +1,13 @@
 package queue
 
 import (
+	"runtime"
 	"sync"
 )
 
 type Queue struct {
 	max     int
-	current int
+	active  []queueItem
 	list    []queueItem
 	listMax int
 
@@ -15,6 +16,17 @@ type Queue struct {
 
 type queueItem struct {
 	ch chan Status
+}
+
+type Handle struct {
+	C <-chan Status
+	i *internalHandle
+}
+
+type internalHandle struct {
+	ch       chan Status
+	q        *Queue
+	released bool // Ensure .Release() is idempotent
 }
 
 type Status struct {
@@ -41,72 +53,105 @@ func (q *Queue) SetMax(max, maxQueued int) {
 	q.mu.Unlock()
 }
 
-func (q *Queue) Acquire() <-chan Status {
+func (q *Queue) Acquire() *Handle {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
 	ch := make(chan Status, 1)
 	switch {
-	case q.current < q.max || q.max == 0: // q.max == 0 => no limit
-		q.current++
+	case len(q.active) < q.max || q.max == 0: // q.max == 0 => no limit
+		q.active = append(q.active, queueItem{ch})
 		ch <- q.makeOkStatus()
 		close(ch)
 	case q.listMax > 0 && len(q.list) >= q.listMax:
 		ch <- Status{Full: true}
 		close(ch)
-	default: // q.current >= q.max
+	default: // q.active >= q.max
 		q.list = append(q.list, queueItem{ch})
-		surplus := q.current - q.max
+		surplus := len(q.active) - q.max
 		ch <- Status{Index: surplus + len(q.list) - 1, Max: surplus + len(q.list)}
 	}
-	return ch
+	return q.makeHandle(ch)
 }
 
-// Release signals that one job is done
-func (q *Queue) Release() {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	if q.current <= q.max && len(q.list) > 0 {
-		head := q.list[0]
-		head.ch <- q.makeOkStatus()
-		close(head.ch)
-
-		q.list = q.list[1:]
-		q.broadcastStatus()
-	} else if q.current > 0 {
-		q.current--
+func (q *Queue) makeHandle(ch chan Status) *Handle {
+	h := &Handle{
+		C: ch,
+		i: &internalHandle{
+			ch: ch,
+			q:  q,
+		},
 	}
+	runtime.AddCleanup(h, (*internalHandle).release, h.i)
+	return h
 }
 
-// Abort aborts an item currently in queue
-func (q *Queue) Abort(ch <-chan Status) {
+// Move next queued handle to active list
+func (q *Queue) popHead() {
+	head := q.list[0]
+	head.ch <- q.makeOkStatus()
+	close(head.ch)
+	q.active = append(q.active, head)
+	q.list = q.list[1:]
+}
+
+func (q *Queue) releaseFromHandle(h *internalHandle) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
+	// Remove this handle from queued list
 	newList := make([]queueItem, 0, len(q.list))
 	for _, item := range q.list {
-		if ch == (<-chan Status)(item.ch) {
+		if h.ch == item.ch {
 			continue
 		}
 		newList = append(newList, item)
 	}
-	q.list = newList
+	if len(newList) != len(q.list) {
+		q.list = newList
+		q.broadcastStatus()
+		return
+	}
+
+	// Remove this handle from active list
+	newList = make([]queueItem, 0, len(q.active))
+	for _, item := range q.active {
+		if h.ch == item.ch {
+			continue
+		}
+		newList = append(newList, item)
+	}
+	q.active = newList
+
+	for len(q.list) > 0 && (len(q.active) < q.max || q.max == 0) {
+		q.popHead()
+	}
 	q.broadcastStatus()
 }
 
+// Release signals that one job is done
+func (h *Handle) Release() {
+	h.i.release()
+
+}
+
+func (h *internalHandle) release() {
+	if h.released {
+		return
+	}
+	h.released = true
+	h.q.releaseFromHandle(h)
+}
+
+// Must be called with q.mu held
 func (q *Queue) broadcastStatus() {
-	surplus := q.current - q.max
+	surplus := len(q.active) - q.max
 	for i := range q.list {
-		if surplus+i < 0 {
-			q.list[i].ch <- q.makeOkStatus()
-		} else {
-			q.list[i].ch <- Status{Index: surplus + i, Max: surplus + len(q.list)}
-		}
+		q.list[i].ch <- Status{Index: surplus + i, Max: surplus + len(q.list)}
 	}
 }
 
-// Must be called with q.mu held, otherwise race condition may occur when reading q.list
+// Must be called with q.mu held
 func (q *Queue) makeOkStatus() Status {
 	return Status{Ok: true, Max: len(q.list)}
 }

@@ -557,8 +557,9 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 		return fmt.Errorf("no queue configured for upstream %s", target.Upstream)
 	}
 
-	chStatus := upstreamQueue.Acquire()
-	status := <-chStatus
+	handle := upstreamQueue.Acquire()
+	defer handle.Release()
+	status := <-handle.C
 	if status.Full {
 		_, _ = writeWithTimeout(downConn, []byte("Server queue is full for this upstream. Please retry later.\n"), writeTimeout)
 		_, _ = writeWithTimeout(downConn, RsyncdExit, writeTimeout)
@@ -570,14 +571,13 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 		msg += fmt.Sprintf("Your position: %d, Total queued: %d\n", status.Index+1, status.Max)
 		_, err = writeWithTimeout(downConn, []byte(msg), writeTimeout)
 		if err != nil {
-			upstreamQueue.Abort(chStatus)
 			return fmt.Errorf("send queue notice to client %s: %w", addr, err)
 		}
 
 	queuing:
 		for !status.Ok {
 			select {
-			case status = <-chStatus:
+			case status = <-handle.C:
 				if status.Ok {
 					break queuing
 				}
@@ -587,12 +587,10 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 			msg := fmt.Sprintf("Your position: %d, Total queued: %d\n", status.Index+1, status.Max)
 			_, err = writeWithTimeout(downConn, []byte(msg), writeTimeout)
 			if err != nil {
-				upstreamQueue.Abort(chStatus)
 				return fmt.Errorf("send queue notice to client %s: %w", addr, err)
 			}
 		}
 	}
-	defer upstreamQueue.Release()
 
 	conn, err := s.dialer.DialContext(ctx, "tcp", upstreamAddr)
 	if err != nil {
