@@ -61,7 +61,7 @@ func (q *Queue) Acquire() *Handle {
 	switch {
 	case len(q.active) < q.max || q.max == 0: // q.max == 0 => no limit
 		q.active = append(q.active, queueItem{ch})
-		ch <- q.makeOkStatus()
+		ch <- Status{Ok: true}
 		close(ch)
 	case q.maxQueued > 0 && len(q.queued) >= q.maxQueued:
 		ch <- Status{Full: true}
@@ -89,7 +89,7 @@ func (q *Queue) makeHandle(ch chan Status) *Handle {
 // Move next queued handle to active queued
 func (q *Queue) popHead() {
 	head := q.queued[0]
-	head.ch <- q.makeOkStatus()
+	head.ch <- Status{Ok: true}
 	close(head.ch)
 	q.active = append(q.active, head)
 	q.queued = q.queued[1:]
@@ -99,9 +99,8 @@ func (q *Queue) releaseFromHandle(h *internalHandle) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	// Close and drain the channel
+	// Drain the channel as Release() is called by the channel reader thread
 	go func() {
-		close(h.ch)
 		for range h.ch {
 		}
 	}()
@@ -110,6 +109,7 @@ func (q *Queue) releaseFromHandle(h *internalHandle) {
 	newList := make([]queueItem, 0, len(q.queued))
 	for _, item := range q.queued {
 		if h.ch == item.ch {
+			close(h.ch)
 			continue
 		}
 		newList = append(newList, item)
@@ -124,6 +124,7 @@ func (q *Queue) releaseFromHandle(h *internalHandle) {
 	newList = make([]queueItem, 0, len(q.active))
 	for _, item := range q.active {
 		if h.ch == item.ch {
+			// h.ch is already closed if it's in active list
 			continue
 		}
 		newList = append(newList, item)
@@ -155,9 +156,4 @@ func (q *Queue) broadcastStatus() {
 	for i := range q.queued {
 		q.queued[i].ch <- Status{Index: surplus + i, Max: surplus + len(q.queued)}
 	}
-}
-
-// Must be called with q.mu held
-func (q *Queue) makeOkStatus() Status {
-	return Status{Ok: true, Max: len(q.queued)}
 }
