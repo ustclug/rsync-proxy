@@ -97,7 +97,7 @@ type Server struct {
 
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
-	// motd
+
 	Motd string
 	// --- End of options section
 
@@ -110,7 +110,6 @@ type Server struct {
 	modules        map[string][]Target
 	upstreams      []upstreamConfig
 	tlsCertificate *tls.Certificate
-	tlsConfig      *tls.Config
 
 	upstreamQueues map[string]*queue.Queue
 
@@ -152,7 +151,6 @@ func New() *Server {
 		errorLog:       errorLog,
 		upstreamQueues: make(map[string]*queue.Queue),
 	}
-	s.tlsConfig = &tls.Config{GetCertificate: s.getTLSCertificate}
 	return s
 }
 
@@ -279,7 +277,14 @@ func (s *Server) updateUpstreamQueuesLocked(upstreams []upstreamConfig) map[stri
 	return queues
 }
 
-func (s *Server) queueForUpstream(name string) (*queue.Queue, bool) {
+func (s *Server) getTargetsForModule(moduleName string) ([]Target, bool) {
+	s.reloadLock.RLock()
+	defer s.reloadLock.RUnlock()
+	targets, ok := s.modules[moduleName]
+	return targets, ok
+}
+
+func (s *Server) getQueueForUpstream(name string) (*queue.Queue, bool) {
 	s.reloadLock.RLock()
 	defer s.reloadLock.RUnlock()
 	q, ok := s.upstreamQueues[name]
@@ -535,10 +540,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	info.Module = moduleName
 	s.connInfo.Store(index, &info)
 
-	s.reloadLock.RLock()
-	targets, ok := s.modules[moduleName]
-	s.reloadLock.RUnlock()
-
+	targets, ok := s.getTargetsForModule(moduleName)
 	if !ok {
 		_, _ = writeWithTimeout(downConn, fmt.Appendf(nil, "unknown module: %s\n", moduleName), writeTimeout)
 		_, _ = writeWithTimeout(downConn, RsyncdExit, writeTimeout)
@@ -552,7 +554,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	info.UpstreamAddr = upstreamAddr
 	s.connInfo.Store(index, &info)
 
-	upstreamQueue, ok := s.queueForUpstream(target.Upstream)
+	upstreamQueue, ok := s.getQueueForUpstream(target.Upstream)
 	if !ok {
 		return fmt.Errorf("no queue configured for upstream %s", target.Upstream)
 	}
@@ -773,7 +775,7 @@ func (s *Server) Listen() error {
 		}
 		s.TLSListenAddr = lTLS.Addr().String()
 		log.Printf("[INFO] Rsync TLS proxy listening on %s", s.TLSListenAddr)
-		lTLS = tls.NewListener(lTLS, s.tlsConfig)
+		lTLS = tls.NewListener(lTLS, &tls.Config{GetCertificate: s.getTLSCertificate})
 	}
 
 	l2, err := net.Listen("tcp", s.HTTPListenAddr)

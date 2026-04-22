@@ -6,10 +6,10 @@ import (
 )
 
 type Queue struct {
-	max     int
-	active  []queueItem
-	list    []queueItem
-	listMax int
+	max       int
+	active    []queueItem
+	queued    []queueItem
+	maxQueued int
 
 	mu sync.Mutex
 }
@@ -37,7 +37,7 @@ type Status struct {
 }
 
 func New(max, maxQueued int) *Queue {
-	return &Queue{max: max, listMax: maxQueued}
+	return &Queue{max: max, maxQueued: maxQueued}
 }
 
 func (q *Queue) GetMax() int {
@@ -49,7 +49,7 @@ func (q *Queue) GetMax() int {
 
 func (q *Queue) SetMax(max, maxQueued int) {
 	q.mu.Lock()
-	q.max, q.listMax = max, maxQueued
+	q.max, q.maxQueued = max, maxQueued
 	q.mu.Unlock()
 }
 
@@ -63,13 +63,13 @@ func (q *Queue) Acquire() *Handle {
 		q.active = append(q.active, queueItem{ch})
 		ch <- q.makeOkStatus()
 		close(ch)
-	case q.listMax > 0 && len(q.list) >= q.listMax:
+	case q.maxQueued > 0 && len(q.queued) >= q.maxQueued:
 		ch <- Status{Full: true}
 		close(ch)
 	default: // q.active >= q.max
-		q.list = append(q.list, queueItem{ch})
+		q.queued = append(q.queued, queueItem{ch})
 		surplus := len(q.active) - q.max
-		ch <- Status{Index: surplus + len(q.list) - 1, Max: surplus + len(q.list)}
+		ch <- Status{Index: surplus + len(q.queued) - 1, Max: surplus + len(q.queued)}
 	}
 	return q.makeHandle(ch)
 }
@@ -86,34 +86,34 @@ func (q *Queue) makeHandle(ch chan Status) *Handle {
 	return h
 }
 
-// Move next queued handle to active list
+// Move next queued handle to active queued
 func (q *Queue) popHead() {
-	head := q.list[0]
+	head := q.queued[0]
 	head.ch <- q.makeOkStatus()
 	close(head.ch)
 	q.active = append(q.active, head)
-	q.list = q.list[1:]
+	q.queued = q.queued[1:]
 }
 
 func (q *Queue) releaseFromHandle(h *internalHandle) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	// Remove this handle from queued list
-	newList := make([]queueItem, 0, len(q.list))
-	for _, item := range q.list {
+	// Remove this handle from queued queued
+	newList := make([]queueItem, 0, len(q.queued))
+	for _, item := range q.queued {
 		if h.ch == item.ch {
 			continue
 		}
 		newList = append(newList, item)
 	}
-	if len(newList) != len(q.list) {
-		q.list = newList
+	if len(newList) != len(q.queued) {
+		q.queued = newList
 		q.broadcastStatus()
 		return
 	}
 
-	// Remove this handle from active list
+	// Remove this handle from active queued
 	newList = make([]queueItem, 0, len(q.active))
 	for _, item := range q.active {
 		if h.ch == item.ch {
@@ -123,7 +123,7 @@ func (q *Queue) releaseFromHandle(h *internalHandle) {
 	}
 	q.active = newList
 
-	for len(q.list) > 0 && (len(q.active) < q.max || q.max == 0) {
+	for len(q.queued) > 0 && (len(q.active) < q.max || q.max == 0) {
 		q.popHead()
 	}
 	q.broadcastStatus()
@@ -146,12 +146,12 @@ func (h *internalHandle) release() {
 // Must be called with q.mu held
 func (q *Queue) broadcastStatus() {
 	surplus := len(q.active) - q.max
-	for i := range q.list {
-		q.list[i].ch <- Status{Index: surplus + i, Max: surplus + len(q.list)}
+	for i := range q.queued {
+		q.queued[i].ch <- Status{Index: surplus + i, Max: surplus + len(q.queued)}
 	}
 }
 
 // Must be called with q.mu held
 func (q *Queue) makeOkStatus() Status {
-	return Status{Ok: true, Max: len(q.list)}
+	return Status{Ok: true, Max: len(q.queued)}
 }

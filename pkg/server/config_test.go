@@ -196,7 +196,7 @@ max_queued_connections = 4
 	err := s.ReadConfig(strings.NewReader(configContent), true)
 	require.NoError(t, err, "load config")
 
-	q, ok := s.queueForUpstream("u1")
+	q, ok := s.getQueueForUpstream("u1")
 	require.True(t, ok)
 	assert.Equal(t, 3, q.GetMax())
 

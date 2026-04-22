@@ -174,7 +174,6 @@ func TestTLSRsyncListener(t *testing.T) {
 	cert, err := tls.LoadX509KeyPair(tlsFiles.certPath, tlsFiles.keyPath)
 	r.NoError(err)
 	srv.tlsCertificate = &cert
-	srv.tlsConfig.GetCertificate = srv.getTLSCertificate
 	err = srv.Listen()
 	r.NoError(err)
 	defer srv.Close()
