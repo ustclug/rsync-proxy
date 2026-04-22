@@ -67,7 +67,7 @@ func (q *Queue) Release() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	if len(q.list) > 0 {
+	if q.current <= q.max && len(q.list) > 0 {
 		head := q.list[0]
 		head.ch <- q.makeOkStatus()
 		close(head.ch)
