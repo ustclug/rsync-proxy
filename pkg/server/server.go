@@ -540,7 +540,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	s.reloadLock.RUnlock()
 
 	if !ok {
-		_, _ = writeWithTimeout(downConn, []byte(fmt.Sprintf("unknown module: %s\n", moduleName)), writeTimeout)
+		_, _ = writeWithTimeout(downConn, fmt.Appendf(nil, "unknown module: %s\n", moduleName), writeTimeout)
 		_, _ = writeWithTimeout(downConn, RsyncdExit, writeTimeout)
 		s.accessLog.F("client %s requests non-existing module %s", ip, moduleName)
 		return nil
