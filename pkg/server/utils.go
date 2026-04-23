@@ -96,12 +96,7 @@ func listenTCPOrUnix(addr string) (net.Listener, error) {
 		if err != nil {
 			return l, err
 		}
-		f, err := l.(*net.UnixListener).File()
-		if err != nil {
-			return l, err
-		}
-		err = f.Chmod(0o660)
-		_ = f.Close()
+		err = os.Chmod(addr, 0o660)
 		return l, err
 	}
 	return net.Listen("tcp", addr)
