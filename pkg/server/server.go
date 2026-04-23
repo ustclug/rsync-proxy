@@ -16,6 +16,7 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -705,6 +706,52 @@ func (s *Server) runHTTPServer() error {
 	}
 
 	var mux http.ServeMux
+	mux.HandleFunc("/upstream-modules", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		name := r.URL.Query().Get("name")
+		if name == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(struct {
+				Message string `json:"message"`
+			}{Message: "missing upstream name"})
+			return
+		}
+
+		forceDiscover := false
+		forceDiscoverValues, ok := r.URL.Query()["force_discover"]
+		if ok && len(forceDiscoverValues) > 0 {
+			forceDiscover, err = strconv.ParseBool(forceDiscoverValues[0])
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(struct {
+					Message string `json:"message"`
+				}{Message: "invalid force_discover value"})
+				return
+			}
+		}
+
+		modules, err := s.ListUpstreamModules(name, forceDiscover)
+		if err != nil {
+			statusCode := http.StatusInternalServerError
+			if strings.Contains(err.Error(), "unknown upstream") {
+				statusCode = http.StatusNotFound
+			}
+			w.WriteHeader(statusCode)
+			_ = json.NewEncoder(w).Encode(struct {
+				Message string `json:"message"`
+			}{Message: err.Error()})
+			return
+		}
+
+		_ = json.NewEncoder(w).Encode(struct {
+			Modules []string `json:"modules"`
+		}{Modules: modules})
+	})
+
 	mux.HandleFunc("/reload", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)

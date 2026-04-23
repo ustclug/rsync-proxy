@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -145,6 +146,38 @@ func SendConnectionsRequest(addr string, stdout, stderr io.Writer) error {
 	return table.Render()
 }
 
+func SendUpstreamModulesRequest(addr string, upstream string, forceDiscover bool, stdout, stderr io.Writer) error {
+	query := url.Values{}
+	query.Set("name", upstream)
+	if forceDiscover {
+		query.Set("force_discover", strconv.FormatBool(forceDiscover))
+	}
+
+	resp, err := httpGet(addr, "/upstream-modules?"+query.Encode())
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(stderr, resp.Body)
+		return fmt.Errorf("failed to get upstream modules")
+	}
+
+	var result struct {
+		Modules []string `json:"modules"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	sort.Strings(result.Modules)
+	for _, name := range result.Modules {
+		_, _ = fmt.Fprintln(stdout, name)
+	}
+	return nil
+}
+
 func printVersion(out io.Writer, pretty bool) error {
 	type Info struct {
 		GitCommit string
@@ -228,17 +261,7 @@ func newUpstreamModulesCmd(s *server.Server) *cobra.Command {
 				return nil
 			}
 
-			if err := s.ReadConfigFromFile(false); err != nil {
-				return fmt.Errorf("load config: %w", err)
-			}
-			modules, err := s.ListUpstreamModules(upstreamModules, forceDiscover)
-			if err != nil {
-				return err
-			}
-			for _, name := range modules {
-				_, _ = fmt.Fprintln(cmd.OutOrStdout(), name)
-			}
-			return nil
+			return SendUpstreamModulesRequest(daemonSocket, upstreamModules, forceDiscover, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 	c.Flags().BoolVar(&useProxyProtocol, "proxy-protocol", false, "Send a PROXY protocol header when discovering modules from an rsync URL")
