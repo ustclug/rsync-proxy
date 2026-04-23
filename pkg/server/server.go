@@ -563,11 +563,13 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	defer handle.Release()
 	status := <-handle.C
 	if status.Full {
+		s.accessLog.F("client %s queue full for module %s", ip, moduleName)
 		_, _ = writeWithTimeout(downConn, []byte("Server queue is full for this upstream. Please retry later.\n"), writeTimeout)
 		_, _ = writeWithTimeout(downConn, RsyncdExit, writeTimeout)
 		return nil
 	}
 	if !status.Ok {
+		s.accessLog.F("client %s starts queueing for module %s", ip, moduleName)
 		// Queueing is isolated per upstream.
 		msg := fmt.Sprintf("Upstream %s has reached the maximum number of %d connections. Your request is being queued.\n", target.Upstream, upstreamQueue.GetMax())
 		msg += fmt.Sprintf("Your position: %d, Total queued: %d\n", status.Index+1, status.Max)

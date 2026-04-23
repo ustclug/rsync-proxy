@@ -21,6 +21,21 @@ import (
 	"github.com/ustclug/rsync-proxy/test/fake/rsync"
 )
 
+func setupAccessLog(t *testing.T, srv *Server) string {
+	t.Helper()
+
+	f, err := os.CreateTemp(t.TempDir(), "access-*.log")
+	require.NoError(t, err)
+	path := f.Name()
+	require.NoError(t, f.Close())
+	require.NoError(t, srv.accessLog.SetFile(path))
+	srv.accessLog.SetFlags(0)
+	t.Cleanup(func() {
+		srv.accessLog.Close()
+	})
+	return path
+}
+
 func startServer(t *testing.T) *Server {
 	srv := New()
 	const (
@@ -417,6 +432,7 @@ func TestPerUpstreamQueueIsolation(t *testing.T) {
 func TestQueueFullRejectsConnection(t *testing.T) {
 	srv := startServer(t)
 	defer srv.Close()
+	accessLogPath := setupAccessLog(t, srv)
 
 	var release sync.WaitGroup
 	release.Add(1)
@@ -468,6 +484,12 @@ func TestQueueFullRejectsConnection(t *testing.T) {
 	assert.Equal(t, string(RsyncdExit), exit)
 
 	release.Done()
+
+	logData, err := os.ReadFile(accessLogPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(logData), "starts requesting module fake")
+	assert.Contains(t, string(logData), "starts queueing for module fake")
+	assert.Contains(t, string(logData), "queue full for module fake")
 }
 
 func TestStartupFailsWhenModuleDiscoveryFails(t *testing.T) {
