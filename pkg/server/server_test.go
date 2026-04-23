@@ -81,7 +81,7 @@ func TestMotdFromServer(t *testing.T) {
 	proxyMotd := "Hello\n"
 	srv.Motd = proxyMotd
 
-	l := strings.Repeat("a", TCPBufferSize)
+	l := strings.Repeat("a", ReadBufferSize)
 	serverMotd := fmt.Sprintf("%s\n%s\n\n", l, l)
 
 	fakeRsync := rsync.NewServer(func(conn *rsync.Conn) {

@@ -1,8 +1,11 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -14,23 +17,54 @@ func writeWithTimeout(conn net.Conn, buf []byte, timeout time.Duration) (n int, 
 	return
 }
 
-func writeProxyProtocolHeader(conn net.Conn, sourceAddr, destAddr net.Addr, timeout time.Duration) error {
-	sourceTCP, ok := sourceAddr.(*net.TCPAddr)
-	if !ok {
-		return fmt.Errorf("invalid source address type %T", sourceAddr)
+func netAddrToString(addr net.Addr) string {
+	switch addr := addr.(type) {
+	case *net.TCPAddr:
+		return addr.IP.String()
+	case *net.UnixAddr:
+		return addr.String()
+	default:
+		return addr.String()
 	}
-	destTCP, ok := destAddr.(*net.TCPAddr)
-	if !ok {
-		return fmt.Errorf("invalid destination address type %T", destAddr)
+}
+
+func writeProxyProtocolHeader(conn net.Conn, sourceAddr, destAddr net.Addr, writeTimeout time.Duration) error {
+	h, err := generateProxyProtocolHeader(sourceAddr, destAddr)
+	if err != nil {
+		return err
+	}
+	_, err = writeWithTimeout(conn, []byte(h), writeTimeout)
+	return err
+}
+
+func generateProxyProtocolHeader(sourceAddr, destAddr net.Addr) (string, error) {
+	var (
+		sourceIP, destIP     net.IP
+		sourcePort, destPort int
+	)
+	switch sourceTCP := sourceAddr.(type) {
+	case *net.TCPAddr:
+		sourceIP, sourcePort = sourceTCP.IP, sourceTCP.Port
+	case *net.UnixAddr:
+		sourceIP, sourcePort = net.IPv4(127, 0, 0, 1), 1
+	default:
+		return "", fmt.Errorf("invalid source address type %T", sourceAddr)
+	}
+
+	switch destTCP := destAddr.(type) {
+	case *net.TCPAddr:
+		destIP, destPort = destTCP.IP, destTCP.Port
+	case *net.UnixAddr:
+		destIP, destPort = net.IPv4(127, 0, 0, 1), 1
+	default:
+		return "", fmt.Errorf("invalid destination address type %T", destAddr)
 	}
 
 	ipVersion := "TCP4"
-	if sourceTCP.IP.To4() == nil {
+	if sourceIP.To4() == nil {
 		ipVersion = "TCP6"
 	}
-	proxyHeader := fmt.Sprintf("PROXY %s %s %s %d %d\r\n", ipVersion, sourceTCP.IP.String(), destTCP.IP.String(), sourceTCP.Port, destTCP.Port)
-	_, err := writeWithTimeout(conn, []byte(proxyHeader), timeout)
-	return err
+	return fmt.Sprintf("PROXY %s %s %s %d %d\r\n", ipVersion, sourceIP.String(), destIP.String(), sourcePort, destPort), nil
 }
 
 // readLine will read as much as it can until the last read character is a newline character.
@@ -53,4 +87,62 @@ func readLine(conn net.Conn, buf []byte, timeout time.Duration) (n int, err erro
 			return
 		}
 	}
+}
+
+func listenTCPOrUnix(addr string) (net.Listener, error) {
+	if strings.HasPrefix(addr, "/") {
+		os.Remove(addr)
+		l, err := net.Listen("unix", addr)
+		if err != nil {
+			return l, err
+		}
+		err = os.Chmod(addr, 0o660)
+		return l, err
+	}
+	return net.Listen("tcp", addr)
+}
+
+func dialContextTCPOrUnix(ctx context.Context, dialer net.Dialer, addr string) (net.Conn, error) {
+	if strings.HasPrefix(addr, "/") {
+		return dialer.DialContext(ctx, "unix", addr)
+	}
+	return dialer.DialContext(ctx, "tcp", addr)
+}
+
+func addDefaultTCPPort(addr string, defaultPort string) string {
+	if strings.HasPrefix(addr, "/") {
+		// don't touch Unix address
+		return addr
+	} else {
+		_, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			if addrErr, ok := err.(*net.AddrError); ok && addrErr.Err == "missing port in address" {
+				return net.JoinHostPort(addr, defaultPort)
+			}
+			// invalid address, return as-is
+		}
+	}
+	return addr
+}
+
+func validateTCPOrUnixAddr(addr string) error {
+	if strings.HasPrefix(addr, "/") {
+		_, err := net.ResolveUnixAddr("unix", addr)
+		return err
+	}
+	_, err := net.ResolveTCPAddr("tcp", addr)
+	return err
+}
+
+func closeRead(conn net.Conn, setLinger bool) error {
+	if setLinger {
+		if tcpConn, ok := conn.(*net.TCPConn); ok {
+			_ = tcpConn.SetLinger(0)
+		}
+	}
+
+	if closeReader, ok := conn.(interface{ CloseRead() error }); ok {
+		return closeReader.CloseRead()
+	}
+	return nil
 }

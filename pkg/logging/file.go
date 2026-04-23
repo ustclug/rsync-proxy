@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -13,9 +14,6 @@ type FileLogger struct {
 	f        *os.File
 	l        *log.Logger
 	mu       sync.Mutex
-
-	F  func(string, ...any)
-	Ln func(...any)
 }
 
 func NewFileLogger(filename string) (l *FileLogger, err error) {
@@ -24,9 +22,6 @@ func NewFileLogger(filename string) (l *FileLogger, err error) {
 		filename: filename,
 		f:        nil,
 		l:        logger,
-
-		F:  logger.Printf,
-		Ln: logger.Println,
 	}
 
 	if filename != "" {
@@ -35,6 +30,18 @@ func NewFileLogger(filename string) (l *FileLogger, err error) {
 		}
 	}
 	return
+}
+
+func (l *FileLogger) F(format string, v ...any) {
+	if err := l.l.Output(2, fmt.Sprintf(format, v...)); err != nil {
+		log.Printf("logging output failed: %v", err)
+	}
+}
+
+func (l *FileLogger) Ln(v ...any) {
+	if err := l.l.Output(2, fmt.Sprint(v...)); err != nil {
+		log.Printf("logging output failed: %v", err)
+	}
 }
 
 func (l *FileLogger) SetFlags(flag int) {
