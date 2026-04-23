@@ -61,7 +61,7 @@ func TestReadLine(t *testing.T) {
 		{'\n'},
 	}}
 
-	buf := make([]byte, TCPBufferSize)
+	buf := make([]byte, ReadBufferSize)
 	n, err := readLine(c, buf, time.Minute)
 	require.NoError(t, err)
 	got := buf[:n]
