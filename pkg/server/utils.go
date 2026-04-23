@@ -92,7 +92,17 @@ func readLine(conn net.Conn, buf []byte, timeout time.Duration) (n int, err erro
 func listenTCPOrUnix(addr string) (net.Listener, error) {
 	if strings.HasPrefix(addr, "/") {
 		os.Remove(addr)
-		return net.Listen("unix", addr)
+		l, err := net.Listen("unix", addr)
+		if err != nil {
+			return l, err
+		}
+		f, err := l.(*net.UnixListener).File()
+		if err != nil {
+			return l, err
+		}
+		err = f.Chmod(0o660)
+		_ = f.Close()
+		return l, err
 	}
 	return net.Listen("tcp", addr)
 }

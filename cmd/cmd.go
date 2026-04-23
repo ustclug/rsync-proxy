@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"runtime"
@@ -16,18 +18,42 @@ import (
 	"github.com/ustclug/rsync-proxy/pkg/server"
 )
 
+const DefaultUnixSocketPath = "/run/rsync-proxy/rsync-proxy.sock"
+
 var (
 	Version   = "0.0.0"
 	GitCommit = "$Format:%H$"          // sha1 from git, output of $(git rev-parse HEAD)
 	BuildDate = "1970-01-01T00:00:00Z" // build date in ISO8601 format, output of $(date -u +'%Y-%m-%dT%H:%M:%SZ')
+
+	daemonSocket = DefaultUnixSocketPath
+	dialer       = &net.Dialer{}
 )
 
-func SendReloadRequest(addr string, stdout, stderr io.Writer) error {
-	client := http.Client{
-		Timeout: time.Second * 10,
+func makeHttpClient(addr string) *http.Client {
+	addrFamily := "tcp"
+	if strings.HasPrefix(addr, "/") {
+		addrFamily = "unix"
 	}
+	return &http.Client{
+		Timeout: time.Second * 10,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return dialer.DialContext(ctx, addrFamily, addr)
+			},
+		},
+	}
+}
 
-	resp, err := client.Post(fmt.Sprintf("http://%s/reload", addr), "application/json", nil)
+func httpGet(addr string, path string) (*http.Response, error) {
+	return makeHttpClient(addr).Get("http://." + path)
+}
+
+func httpPost(addr string, path string, contentType string, body io.Reader) (*http.Response, error) {
+	return makeHttpClient(addr).Post("http://."+path, contentType, body)
+}
+
+func SendReloadRequest(addr string, stdout, stderr io.Writer) error {
+	resp, err := httpPost(addr, "/reload", "application/json", nil)
 	if err != nil {
 		return err
 	}
@@ -44,7 +70,7 @@ func SendReloadRequest(addr string, stdout, stderr io.Writer) error {
 }
 
 func SendConnectionsRequest(addr string, stdout, stderr io.Writer) error {
-	resp, err := http.Get(fmt.Sprintf("http://%s/status", addr))
+	resp, err := httpGet(addr, "/status")
 	if err != nil {
 		return err
 	}
@@ -116,31 +142,25 @@ func printVersion(out io.Writer, pretty bool) error {
 	})
 }
 
-func newConnectionsCmd(s *server.Server) *cobra.Command {
+func newConnectionsCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "connections",
 		Short: "Show active connections",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := s.ReadConfigFromFile(false); err != nil {
-				return fmt.Errorf("load config: %w", err)
-			}
-			return SendConnectionsRequest(s.HTTPListenAddr, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return SendConnectionsRequest(daemonSocket, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 	return c
 }
 
-func newReloadCmd(s *server.Server) *cobra.Command {
+func newReloadCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "reload",
 		Short: "Inform server to reload config",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := s.ReadConfigFromFile(false); err != nil {
-				return fmt.Errorf("load config: %w", err)
-			}
-			return SendReloadRequest(s.HTTPListenAddr, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return SendReloadRequest(daemonSocket, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 	return c
@@ -240,12 +260,13 @@ func New() *cobra.Command {
 		SilenceUsage: true,
 	}
 	pFlags := c.PersistentFlags()
+	pFlags.StringVarP(&daemonSocket, "host", "H", DefaultUnixSocketPath, "Daemon socket to connect to")
 	pFlags.StringVarP(&s.ConfigPath, "config", "c", "/etc/rsync-proxy/config.toml", "Path to config file")
 	pFlags.BoolVarP(&version, "version", "V", false, "Print version and exit")
 
 	c.AddCommand(
-		newConnectionsCmd(s),
-		newReloadCmd(s),
+		newConnectionsCmd(),
+		newReloadCmd(),
 		newUpstreamModulesCmd(s),
 		newVersionCmd(),
 	)
