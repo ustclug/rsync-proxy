@@ -1,8 +1,11 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -23,7 +26,7 @@ func writeProxyProtocolHeader(conn net.Conn, sourceAddr, destAddr net.Addr, time
 	case *net.TCPAddr:
 		sourceIP, sourcePort = sourceTCP.IP, sourceTCP.Port
 	case *net.UnixAddr:
-		sourceIP, sourcePort = net.IPv4(127, 0, 0, 1), 0
+		sourceIP, sourcePort = net.IPv4(127, 0, 0, 1), 1
 	default:
 		return fmt.Errorf("invalid source address type %T", sourceAddr)
 	}
@@ -32,7 +35,7 @@ func writeProxyProtocolHeader(conn net.Conn, sourceAddr, destAddr net.Addr, time
 	case *net.TCPAddr:
 		destIP, destPort = destTCP.IP, destTCP.Port
 	case *net.UnixAddr:
-		destIP, destPort = net.IPv4(127, 0, 0, 1), 0
+		destIP, destPort = net.IPv4(127, 0, 0, 1), 1
 	default:
 		return fmt.Errorf("invalid destination address type %T", destAddr)
 	}
@@ -66,4 +69,57 @@ func readLine(conn net.Conn, buf []byte, timeout time.Duration) (n int, err erro
 			return
 		}
 	}
+}
+
+func listenTCPOrUnix(addr string) (net.Listener, error) {
+	if strings.HasPrefix(addr, "/") {
+		os.Remove(addr)
+		return net.Listen("unix", addr)
+	}
+	return net.Listen("tcp", addr)
+}
+
+func dialContextTCPOrUnix(ctx context.Context, dialer net.Dialer, addr string) (net.Conn, error) {
+	if strings.HasPrefix(addr, "/") {
+		return dialer.DialContext(ctx, "unix", addr)
+	}
+	return dialer.DialContext(ctx, "tcp", addr)
+}
+
+func addDefaultTCPPort(addr string, defaultPort string) string {
+	if strings.HasPrefix(addr, "/") {
+		// don't touch Unix address
+		return addr
+	} else {
+		_, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			if addrErr, ok := err.(*net.AddrError); ok && addrErr.Err == "missing port in address" {
+				return net.JoinHostPort(addr, defaultPort)
+			}
+			// invalid address, return as-is
+		}
+	}
+	return addr
+}
+
+func validateTCPOrUnixAddr(addr string) error {
+	if strings.HasPrefix(addr, "/") {
+		_, err := net.ResolveUnixAddr("unix", addr)
+		return err
+	}
+	_, err := net.ResolveTCPAddr("tcp", addr)
+	return err
+}
+
+func closeRead(conn net.Conn, setLinger bool) error {
+	if setLinger {
+		if tcpConn, ok := conn.(*net.TCPConn); ok {
+			_ = tcpConn.SetLinger(0)
+		}
+	}
+
+	if closeReader, ok := conn.(interface{ CloseRead() error }); ok {
+		return closeReader.CloseRead()
+	}
+	return nil
 }

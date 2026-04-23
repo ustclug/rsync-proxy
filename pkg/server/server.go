@@ -640,7 +640,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	_ = downConn.SetDeadline(zeroTime)
 
 	// Use countingReader to track bytes in real-time
-	// <sent> and <received> are with the client, not upstream
+	// <sent> and <received> are relative to the client, not upstream
 	downReader := &countingReader{reader: downConn, counter: &info.ReceivedBytes}
 	upReader := &countingReader{reader: upConn, counter: &info.SentBytes}
 
