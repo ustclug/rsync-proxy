@@ -132,7 +132,7 @@ func SendConnectionsRequest(addr string, stdout, stderr io.Writer) error {
 	)
 	table.Header("Index", "Remote", "Module", "Upstream", "Connected", "Received", "Sent")
 	for _, conn := range result.Connections {
-		table.Append([]string{
+		_ = table.Append([]string{
 			strconv.Itoa(conn.Index),
 			conn.RemoteAddr,
 			conn.Module,
