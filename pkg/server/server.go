@@ -26,7 +26,9 @@ import (
 )
 
 const (
-	TCPBufferSize = 256
+	ReadBufferSize = 256
+
+	defaultRsyncPortString = "873"
 )
 
 var (
@@ -35,6 +37,13 @@ var (
 	// See https://github.com/RsyncProject/rsync/blob/a6312e60c95e5ebb5764eaf18eb07be23420ebc6/clientserver.c#L203
 	RsyncdServerVersion = []byte("@RSYNCD: 32.0 sha512 sha256 sha1 md5 md4\n")
 	RsyncdExit          = []byte("@RSYNCD: EXIT\n")
+
+	bufPool = &sync.Pool{
+		New: func() any {
+			buf := make([]byte, ReadBufferSize)
+			return &buf
+		},
+	} // pool of (*[]byte)
 )
 
 const lineFeed = '\n'
@@ -106,7 +115,6 @@ type Server struct {
 
 	reloadLock sync.RWMutex
 	dialer     net.Dialer
-	bufPool    sync.Pool
 	// name -> upstream targets
 	modules        map[string][]Target
 	upstreams      []upstreamConfig
@@ -118,10 +126,9 @@ type Server struct {
 	connIndex       atomic.Uint32
 	connInfo        sync.Map
 
-	TCPListener *net.TCPListener
-	// TLSListener is not a TCPListener
+	TCPListener  net.Listener
 	TLSListener  net.Listener
-	HTTPListener *net.TCPListener
+	HTTPListener net.Listener
 }
 
 type countingReader struct {
@@ -141,12 +148,6 @@ func New() *Server {
 	accessLog, _ := logging.NewFileLogger("")
 	errorLog, _ := logging.NewFileLogger("")
 	s := &Server{
-		bufPool: sync.Pool{
-			New: func() any {
-				buf := make([]byte, TCPBufferSize)
-				return &buf
-			},
-		},
 		dialer:         net.Dialer{}, // customize keep alive interval?
 		accessLog:      accessLog,
 		errorLog:       errorLog,
@@ -197,8 +198,7 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 			return fmt.Errorf("upstream=%s must set modules or discover_modules", upstreamName)
 		}
 		addr := v.Address
-		_, err := net.ResolveTCPAddr("tcp", addr)
-		if err != nil {
+		if err := validateTCPOrUnixAddr(addr); err != nil {
 			return fmt.Errorf("resolve address: %w, upstream=%s, address=%s", err, upstreamName, addr)
 		}
 		upstreams = append(upstreams, upstreamConfig{
@@ -362,20 +362,8 @@ func (s *Server) discoverConfiguredModules(ctx context.Context, upstreams []upst
 
 func (s *Server) discoverModulesFromUpstream(ctx context.Context, upstream upstreamConfig) ([]string, error) {
 	addr := upstream.Target.Addr
-	addrFam := "tcp"
-	if strings.HasPrefix(addr, "/") {
-		addrFam = "unix"
-	} else {
-		_, _, err := net.SplitHostPort(addr)
-		if err != nil {
-			if addrErr, ok := err.(*net.AddrError); ok && addrErr.Err == "missing port in address" {
-				addr = net.JoinHostPort(addr, "873")
-			} else {
-				return nil, fmt.Errorf("invalid address: %w", err)
-			}
-		}
-	}
-	conn, err := s.dialer.DialContext(ctx, addrFam, addr)
+	addr = addDefaultTCPPort(addr, defaultRsyncPortString)
+	conn, err := dialContextTCPOrUnix(ctx, s.dialer, addr)
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
 	}
@@ -386,7 +374,7 @@ func (s *Server) discoverModulesFromUpstream(ctx context.Context, upstream upstr
 		}
 	}
 
-	reader := bufio.NewReaderSize(conn, TCPBufferSize)
+	reader := bufio.NewReaderSize(conn, ReadBufferSize)
 	if _, err := writeWithTimeout(conn, RsyncdServerVersion, s.WriteTimeout); err != nil {
 		return nil, fmt.Errorf("send version: %w", err)
 	}
@@ -501,8 +489,8 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	s.connInfo.Store(index, &info)
 	defer s.connInfo.Delete(index)
 
-	bufPtr := s.bufPool.Get().(*[]byte)
-	defer s.bufPool.Put(bufPtr)
+	bufPtr := bufPool.Get().(*[]byte)
+	defer bufPool.Put(bufPtr)
 	buf := *bufPtr
 
 	addr := downConn.RemoteAddr().String()
@@ -604,11 +592,10 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 		}
 	}
 
-	conn, err := s.dialer.DialContext(ctx, "tcp", upstreamAddr)
+	upConn, err := dialContextTCPOrUnix(ctx, s.dialer, upstreamAddr)
 	if err != nil {
 		return fmt.Errorf("dial to upstream: %s: %w", upstreamAddr, err)
 	}
-	upConn := conn.(*net.TCPConn)
 	defer upConn.Close()
 	upIp := upConn.RemoteAddr().(*net.TCPAddr).IP.String()
 	if useProxyProtocol {
@@ -676,12 +663,9 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	}()
 	select {
 	case <-receivedClosed:
-		_ = upConn.SetLinger(0)
-		_ = upConn.CloseRead()
+		closeRead(upConn, true)
 	case <-sentClosed:
-		if closeReader, ok := downConn.(interface{ CloseRead() error }); ok {
-			_ = closeReader.CloseRead()
-		}
+		closeRead(downConn, false)
 	}
 
 	sentBytes := info.SentBytes.Load()
@@ -769,7 +753,7 @@ func (s *Server) runHTTPServer() error {
 }
 
 func (s *Server) Listen() error {
-	l1, err := net.Listen("tcp", s.ListenAddr)
+	l1, err := listenTCPOrUnix(s.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("create tcp listener: %w", err)
 	}
@@ -778,7 +762,7 @@ func (s *Server) Listen() error {
 
 	var lTLS net.Listener
 	if s.TLSListenAddr != "" {
-		lTLS, err = net.Listen("tcp", s.TLSListenAddr)
+		lTLS, err = listenTCPOrUnix(s.TLSListenAddr)
 		if err != nil {
 			_ = l1.Close()
 			return fmt.Errorf("create tls listener: %w", err)
@@ -788,7 +772,7 @@ func (s *Server) Listen() error {
 		lTLS = tls.NewListener(lTLS, &tls.Config{GetCertificate: s.getTLSCertificate})
 	}
 
-	l2, err := net.Listen("tcp", s.HTTPListenAddr)
+	l2, err := listenTCPOrUnix(s.HTTPListenAddr)
 	if err != nil {
 		_ = l1.Close()
 		if lTLS != nil {
@@ -799,9 +783,9 @@ func (s *Server) Listen() error {
 	s.HTTPListenAddr = l2.Addr().String()
 	log.Printf("[INFO] HTTP server listening on %s", s.HTTPListenAddr)
 
-	s.TCPListener = l1.(*net.TCPListener)
+	s.TCPListener = l1
 	s.TLSListener = lTLS
-	s.HTTPListener = l2.(*net.TCPListener)
+	s.HTTPListener = l2
 	return nil
 }
 
@@ -842,7 +826,7 @@ func (s *Server) runRsyncServer(ctx context.Context, listener net.Listener, acce
 }
 
 func (s *Server) Run() error {
-	errC := make(chan error)
+	errC := make(chan error, 1)
 	go func() {
 		err := s.runHTTPServer()
 		if err != nil {
