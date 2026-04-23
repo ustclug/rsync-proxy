@@ -10,9 +10,12 @@ import (
 	"net/http"
 	"net/url"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/olekukonko/tablewriter"
+	"github.com/olekukonko/tablewriter/tw"
 	"github.com/spf13/cobra"
 
 	"github.com/ustclug/rsync-proxy/pkg/server"
@@ -103,19 +106,43 @@ func SendConnectionsRequest(addr string, stdout, stderr io.Writer) error {
 		return nil
 	}
 
-	_, _ = fmt.Fprintln(stdout, "=== Active Connections ===")
+	table := tablewriter.NewTable(
+		stdout,
+		tablewriter.WithRendition(tw.Rendition{
+			Borders: tw.BorderNone,
+			Settings: tw.Settings{
+				Lines:      tw.LinesNone,
+				Separators: tw.SeparatorsNone,
+			},
+		}),
+		tablewriter.WithPadding(tw.Padding{
+			Right:     "  ",
+			Overwrite: true,
+		}),
+		tablewriter.WithHeaderAutoFormat(tw.Off),
+		tablewriter.WithAlignment(tw.Alignment{
+			tw.AlignRight,   // Index
+			tw.AlignRight,   // RemoteAddr
+			tw.AlignDefault, // Module
+			tw.AlignRight,   // UpstreamAddr
+			tw.AlignDefault, // ConnectedAt
+			tw.AlignRight,   // ReceivedBytes
+			tw.AlignRight,   // SentBytes
+		}),
+	)
+	table.Header("Index", "Remote", "Module", "Upstream", "Connected", "Received", "Sent")
 	for _, conn := range result.Connections {
-		_, _ = fmt.Fprintf(stdout, "Index: %d, Addr: %s, Module: %s, Upstream: %s, Connected: %s, Recv: %d bytes, Send: %d bytes\n",
-			conn.Index,
+		table.Append([]string{
+			strconv.Itoa(conn.Index),
 			conn.RemoteAddr,
 			conn.Module,
 			conn.UpstreamAddr,
-			conn.ConnectedAt.Format("2006-01-02 15:04:05"),
-			conn.ReceivedBytes,
-			conn.SentBytes)
+			conn.ConnectedAt.Format(time.DateTime),
+			strconv.FormatInt(conn.ReceivedBytes, 10),
+			strconv.FormatInt(conn.SentBytes, 10),
+		})
 	}
-	_, _ = fmt.Fprintln(stdout, "==========================")
-	return nil
+	return table.Render()
 }
 
 func printVersion(out io.Writer, pretty bool) error {
