@@ -89,7 +89,7 @@ func (q *Queue) makeHandle(ch chan Status) *Handle {
 // Move next queued handle to active queued
 func (q *Queue) popHead() {
 	head := q.queued[0]
-	head.ch <- Status{Ok: true}
+	trySend(head.ch, Status{Ok: true})
 	close(head.ch)
 	q.active = append(q.active, head)
 	q.queued = q.queued[1:]
@@ -147,9 +147,14 @@ func (h *internalHandle) release() {
 func (q *Queue) broadcastStatus() {
 	surplus := len(q.active) - q.max
 	for i := range q.queued {
-		select {
-		case q.queued[i].ch <- Status{Index: surplus + i, Max: surplus + len(q.queued)}:
-		default:
-		}
+		trySend(q.queued[i].ch, Status{Index: surplus + i, Max: surplus + len(q.queued)})
 	}
+}
+
+func trySend[T any](ch chan T, obj T) {
+	select {
+	case <-ch:
+	default:
+	}
+	ch <- obj
 }
