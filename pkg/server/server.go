@@ -369,7 +369,8 @@ func (s *Server) discoverModulesFromUpstream(ctx context.Context, upstream upstr
 	}
 	defer conn.Close()
 	if upstream.Target.UseProxyProtocol {
-		if err := writeProxyProtocolHeader(conn, conn.LocalAddr(), conn.RemoteAddr(), s.WriteTimeout); err != nil {
+		err := writeProxyProtocolHeader(conn, conn.LocalAddr(), conn.RemoteAddr(), s.WriteTimeout)
+		if err != nil {
 			return nil, fmt.Errorf("send proxy protocol header: %w", err)
 		}
 	}
@@ -494,7 +495,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	buf := *bufPtr
 
 	addr := downConn.RemoteAddr().String()
-	ip := downConn.RemoteAddr().(*net.TCPAddr).IP.String()
+	ip := netAddrToString(downConn.RemoteAddr())
 
 	writeTimeout := s.WriteTimeout
 	readTimeout := s.ReadTimeout
@@ -597,25 +598,26 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 		return fmt.Errorf("dial to upstream: %s: %w", upstreamAddr, err)
 	}
 	defer upConn.Close()
-	upIp := upConn.RemoteAddr().(*net.TCPAddr).IP.String()
+	upAddr := netAddrToString(upConn.RemoteAddr())
 	if useProxyProtocol {
-		if err := writeProxyProtocolHeader(upConn, downConn.RemoteAddr(), upConn.RemoteAddr(), writeTimeout); err != nil {
-			return fmt.Errorf("send proxy protocol header to upstream %s: %w", upIp, err)
+		err := writeProxyProtocolHeader(upConn, downConn.RemoteAddr(), upConn.RemoteAddr(), s.WriteTimeout)
+		if err != nil {
+			return fmt.Errorf("send proxy protocol header to upstream %s: %w", upAddr, err)
 		}
 	}
 
 	_, err = writeWithTimeout(upConn, rsyncdClientVersion, writeTimeout)
 	if err != nil {
-		return fmt.Errorf("send version to upstream %s: %w", upIp, err)
+		return fmt.Errorf("send version to upstream %s: %w", upAddr, err)
 	}
 
 	n, err = readLine(upConn, buf, readTimeout)
 	if err != nil {
-		return fmt.Errorf("read version from upstream %s: %w", upIp, err)
+		return fmt.Errorf("read version from upstream %s: %w", upAddr, err)
 	}
 	data = buf[:n]
 	if !bytes.HasPrefix(data, RsyncdVersionPrefix) {
-		return fmt.Errorf("unknown version from upstream %s: %s", upIp, data)
+		return fmt.Errorf("unknown version from upstream %s: %s", upAddr, data)
 	}
 
 	// send back the motd
@@ -629,7 +631,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 
 	_, err = writeWithTimeout(upConn, []byte(moduleName+"\n"), writeTimeout)
 	if err != nil {
-		return fmt.Errorf("send module to upstream %s: %w", upIp, err)
+		return fmt.Errorf("send module to upstream %s: %w", upAddr, err)
 	}
 
 	s.accessLog.F("client %s starts requesting module %s", ip, moduleName)
@@ -805,6 +807,13 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	s.activeConnCount.Add(1)
 	defer s.activeConnCount.Add(-1)
 	connIndex := s.connIndex.Add(1)
+
+	defer func() {
+		err := recover()
+		if err != nil {
+			s.errorLog.F("handleConn panicked: %s", err)
+		}
+	}()
 
 	err := s.relay(ctx, connIndex, conn)
 	if err != nil {

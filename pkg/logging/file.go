@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -32,11 +33,11 @@ func NewFileLogger(filename string) (l *FileLogger, err error) {
 }
 
 func (l *FileLogger) F(format string, v ...any) {
-	l.l.Printf(format, v...)
+	l.l.Output(2, fmt.Sprintf(format, v...))
 }
 
 func (l *FileLogger) Ln(v ...any) {
-	l.l.Println(v...)
+	l.l.Output(2, fmt.Sprint(v...))
 }
 
 func (l *FileLogger) SetFlags(flag int) {

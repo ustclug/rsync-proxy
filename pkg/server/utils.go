@@ -17,7 +17,27 @@ func writeWithTimeout(conn net.Conn, buf []byte, timeout time.Duration) (n int, 
 	return
 }
 
-func writeProxyProtocolHeader(conn net.Conn, sourceAddr, destAddr net.Addr, timeout time.Duration) error {
+func netAddrToString(addr net.Addr) string {
+	switch addr := addr.(type) {
+	case *net.TCPAddr:
+		return addr.IP.String()
+	case *net.UnixAddr:
+		return addr.String()
+	default:
+		return addr.String()
+	}
+}
+
+func writeProxyProtocolHeader(conn net.Conn, sourceAddr, destAddr net.Addr, writeTimeout time.Duration) error {
+	h, err := generateProxyProtocolHeader(sourceAddr, destAddr)
+	if err != nil {
+		return err
+	}
+	_, err = writeWithTimeout(conn, []byte(h), writeTimeout)
+	return err
+}
+
+func generateProxyProtocolHeader(sourceAddr, destAddr net.Addr) (string, error) {
 	var (
 		sourceIP, destIP     net.IP
 		sourcePort, destPort int
@@ -28,7 +48,7 @@ func writeProxyProtocolHeader(conn net.Conn, sourceAddr, destAddr net.Addr, time
 	case *net.UnixAddr:
 		sourceIP, sourcePort = net.IPv4(127, 0, 0, 1), 1
 	default:
-		return fmt.Errorf("invalid source address type %T", sourceAddr)
+		return "", fmt.Errorf("invalid source address type %T", sourceAddr)
 	}
 
 	switch destTCP := destAddr.(type) {
@@ -37,16 +57,14 @@ func writeProxyProtocolHeader(conn net.Conn, sourceAddr, destAddr net.Addr, time
 	case *net.UnixAddr:
 		destIP, destPort = net.IPv4(127, 0, 0, 1), 1
 	default:
-		return fmt.Errorf("invalid destination address type %T", destAddr)
+		return "", fmt.Errorf("invalid destination address type %T", destAddr)
 	}
 
 	ipVersion := "TCP4"
 	if sourceIP.To4() == nil {
 		ipVersion = "TCP6"
 	}
-	proxyHeader := fmt.Sprintf("PROXY %s %s %s %d %d\r\n", ipVersion, sourceIP.String(), destIP.String(), sourcePort, destPort)
-	_, err := writeWithTimeout(conn, []byte(proxyHeader), timeout)
-	return err
+	return fmt.Sprintf("PROXY %s %s %s %d %d\r\n", ipVersion, sourceIP.String(), destIP.String(), sourcePort, destPort), nil
 }
 
 // readLine will read as much as it can until the last read character is a newline character.
