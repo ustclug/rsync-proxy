@@ -33,11 +33,15 @@ func NewFileLogger(filename string) (l *FileLogger, err error) {
 }
 
 func (l *FileLogger) F(format string, v ...any) {
-	l.l.Output(2, fmt.Sprintf(format, v...))
+	if err := l.l.Output(2, fmt.Sprintf(format, v...)); err != nil {
+		log.Printf("logging output failed: %v", err)
+	}
 }
 
 func (l *FileLogger) Ln(v ...any) {
-	l.l.Output(2, fmt.Sprint(v...))
+	if err := l.l.Output(2, fmt.Sprint(v...)); err != nil {
+		log.Printf("logging output failed: %v", err)
+	}
 }
 
 func (l *FileLogger) SetFlags(flag int) {

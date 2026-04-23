@@ -665,9 +665,13 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	}()
 	select {
 	case <-receivedClosed:
-		closeRead(upConn, true)
+		if err := closeRead(upConn, true); err != nil {
+			s.errorLog.F("close upstream read: %v", err)
+		}
 	case <-sentClosed:
-		closeRead(downConn, false)
+		if err := closeRead(downConn, false); err != nil {
+			s.errorLog.F("close downstream read: %v", err)
+		}
 	}
 
 	sentBytes := info.SentBytes.Load()
