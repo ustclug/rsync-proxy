@@ -3,7 +3,7 @@
 [proxy]
 listen = "0.0.0.0:873"
 listen_tls = "0.0.0.0:874"
-listen_http = "127.0.0.1:9528"
+listen_http = "/run/rsync-proxy/rsync-proxy"
 access_log = "/var/log/rsync-proxy/access.log"
 error_log = "/var/log/rsync-proxy/error.log"
 tls_cert_file = "/etc/rsync-proxy/tls/server.crt"
@@ -36,4 +36,10 @@ address = "rsync.example.internal:1236"
 modules = ["pro"]
 # This option requires rsync upstream to support and enable proxy protocol
 # See: https://github.com/WayneD/rsync/blob/2f9b963abaa52e44891180fe6c0d1c2219f6686d/rsyncd.conf.5.md?plain=1#L268
+use_proxy_protocol = true
+
+[upstreams.5]
+# Rsync does not natively support Unix sockets, so you must run Rsync from xinetd or systemd.socket (with Accept=yes)
+address = "/run/rsyncd.sock"
+modules = ["max"]
 use_proxy_protocol = true
