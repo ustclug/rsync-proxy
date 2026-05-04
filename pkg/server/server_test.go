@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -56,6 +57,10 @@ func startServer(t *testing.T) *Server {
 		assert.NoErrorf(t, err, "Fail to run server")
 	}()
 	return srv
+}
+
+func testHTTPClient() *http.Client {
+	return &http.Client{Timeout: time.Second}
 }
 
 func doClientHandshake(conn *rsync.Conn, version []byte, module string) (svrVersion string, err error) {
@@ -335,7 +340,11 @@ func TestStatusIncludesSelectedUpstream(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		infos := srv.ListConnectionInfo()
-		return len(infos) == 1 && infos[0].UpstreamAddr == upstreamAddr
+		if len(infos) != 1 {
+			return false
+		}
+		_, _, infoUpstreamAddr, _, _, _ := infos[0].snapshot()
+		return infoUpstreamAddr == upstreamAddr
 	}, time.Second, 10*time.Millisecond)
 
 	wg.Done()
@@ -345,7 +354,7 @@ func TestMetricsEndpointNoConnections(t *testing.T) {
 	srv := startServer(t)
 	defer srv.Close()
 
-	resp, err := http.Get("http://" + srv.HTTPListener.Addr().String() + "/metrics")
+	resp, err := testHTTPClient().Get("http://" + srv.HTTPListener.Addr().String() + "/metrics")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -364,7 +373,7 @@ func TestMetricsEndpointRejectsNonGET(t *testing.T) {
 	srv := startServer(t)
 	defer srv.Close()
 
-	resp, err := http.Post("http://"+srv.HTTPListener.Addr().String()+"/metrics", "text/plain", nil)
+	resp, err := testHTTPClient().Post("http://"+srv.HTTPListener.Addr().String()+"/metrics", "text/plain", nil)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -402,10 +411,14 @@ func TestMetricsIncludesActiveConnections(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		infos := srv.ListConnectionInfo()
-		return len(infos) == 1 && infos[0].UpstreamAddr == upstreamAddr
+		if len(infos) != 1 {
+			return false
+		}
+		_, _, infoUpstreamAddr, _, _, _ := infos[0].snapshot()
+		return infoUpstreamAddr == upstreamAddr
 	}, time.Second, 10*time.Millisecond)
 
-	resp, err := http.Get("http://" + srv.HTTPListener.Addr().String() + "/metrics")
+	resp, err := testHTTPClient().Get("http://" + srv.HTTPListener.Addr().String() + "/metrics")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -425,6 +438,41 @@ func TestMetricsIncludesActiveConnections(t *testing.T) {
 	assert.NotContains(t, text, rawConn.LocalAddr().String())
 
 	wg.Done()
+}
+
+func TestPrometheusConnectionGroupingUsesStructuredKey(t *testing.T) {
+	srv := New()
+
+	first := &ConnInfo{Index: 1, ConnectedAt: time.Unix(100, 0)}
+	first.Module = "a\xffb"
+	first.UpstreamAddr = "c"
+	srv.connInfo.Store(first.Index, first)
+
+	second := &ConnInfo{Index: 2, ConnectedAt: time.Unix(100, 0)}
+	second.Module = "a"
+	second.UpstreamAddr = "b\xffc"
+	srv.connInfo.Store(second.Index, second)
+
+	var buf bytes.Buffer
+	srv.writePrometheusMetrics(&buf, time.Unix(101, 0))
+	text := buf.String()
+
+	assert.Contains(t, text, "rsync_proxy_active_connections_by_module{module=\"a\xffb\",upstream=\"c\"} 1\n")
+	assert.Contains(t, text, "rsync_proxy_active_connections_by_module{module=\"a\",upstream=\"b\xffc\"} 1\n")
+	assert.NotContains(t, text, "rsync_proxy_active_connections_by_module{module=\"a\",upstream=\"b\xffc\"} 2\n")
+}
+
+func TestPrometheusDurationIncludesFractionalSeconds(t *testing.T) {
+	srv := New()
+	conn := &ConnInfo{Index: 1, ConnectedAt: time.Unix(100, 0)}
+	conn.Module = "fake"
+	conn.UpstreamAddr = "127.0.0.1:873"
+	srv.connInfo.Store(conn.Index, conn)
+
+	var buf bytes.Buffer
+	srv.writePrometheusMetrics(&buf, time.Unix(100, 250_000_000))
+
+	assert.Contains(t, buf.String(), "rsync_proxy_connection_duration_seconds{index=\"1\",module=\"fake\",upstream=\"127.0.0.1:873\"} 0.250\n")
 }
 
 func TestPrometheusLabelValueEscaping(t *testing.T) {

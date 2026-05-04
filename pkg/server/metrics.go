@@ -1,0 +1,106 @@
+package server
+
+import (
+	"fmt"
+	"io"
+	"sort"
+	"strings"
+	"time"
+)
+
+func prometheusEscapeLabelValue(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return s
+}
+
+func prometheusLabelValueOrUnknown(s string) string {
+	if s == "" {
+		return "unknown"
+	}
+	return s
+}
+
+func prometheusLabels(index uint32, module, upstream string) string {
+	return fmt.Sprintf(
+		`index="%d",module="%s",upstream="%s"`,
+		index,
+		prometheusEscapeLabelValue(prometheusLabelValueOrUnknown(module)),
+		prometheusEscapeLabelValue(prometheusLabelValueOrUnknown(upstream)),
+	)
+}
+
+type prometheusConnectionGroup struct {
+	module   string
+	upstream string
+}
+
+func (s *Server) writePrometheusMetrics(w io.Writer, now time.Time) {
+	connections := s.ListConnectionInfo()
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_active_connections Current active rsync proxy connections.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_active_connections gauge")
+	_, _ = fmt.Fprintf(w, "rsync_proxy_active_connections %d\n", s.GetActiveConnectionCount())
+
+	connectionCounts := make(map[prometheusConnectionGroup]int)
+	for _, conn := range connections {
+		_, module, upstream, _, _, _ := conn.snapshot()
+		key := prometheusConnectionGroup{
+			module:   prometheusLabelValueOrUnknown(module),
+			upstream: prometheusLabelValueOrUnknown(upstream),
+		}
+		connectionCounts[key]++
+	}
+
+	keys := make([]prometheusConnectionGroup, 0, len(connectionCounts))
+	for key := range connectionCounts {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].module != keys[j].module {
+			return keys[i].module < keys[j].module
+		}
+		return keys[i].upstream < keys[j].upstream
+	})
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_active_connections_by_module Current active rsync proxy connections by module and upstream.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_active_connections_by_module gauge")
+	for _, key := range keys {
+		module := prometheusEscapeLabelValue(key.module)
+		upstream := prometheusEscapeLabelValue(key.upstream)
+		_, _ = fmt.Fprintf(w, "rsync_proxy_active_connections_by_module{module=\"%s\",upstream=\"%s\"} %d\n", module, upstream, connectionCounts[key])
+	}
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_connection_sent_bytes Bytes sent to clients for active connections.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_connection_sent_bytes gauge")
+	for _, conn := range connections {
+		index, module, upstream, _, sentBytes, _ := conn.snapshot()
+		_, _ = fmt.Fprintf(w, "rsync_proxy_connection_sent_bytes{%s} %d\n", prometheusLabels(index, module, upstream), sentBytes)
+	}
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_connection_received_bytes Bytes received from clients for active connections.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_connection_received_bytes gauge")
+	for _, conn := range connections {
+		index, module, upstream, _, _, receivedBytes := conn.snapshot()
+		_, _ = fmt.Fprintf(w, "rsync_proxy_connection_received_bytes{%s} %d\n", prometheusLabels(index, module, upstream), receivedBytes)
+	}
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_connection_connected_timestamp_seconds Unix timestamp when active connections were established.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_connection_connected_timestamp_seconds gauge")
+	for _, conn := range connections {
+		index, module, upstream, connectedAt, _, _ := conn.snapshot()
+		_, _ = fmt.Fprintf(w, "rsync_proxy_connection_connected_timestamp_seconds{%s} %d\n", prometheusLabels(index, module, upstream), connectedAt.Unix())
+	}
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_connection_duration_seconds Current duration of active connections.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_connection_duration_seconds gauge")
+	for _, conn := range connections {
+		index, module, upstream, connectedAt, _, _ := conn.snapshot()
+		duration := now.Sub(connectedAt).Seconds()
+		if duration < 0 {
+			duration = 0
+		}
+		_, _ = fmt.Fprintf(w, "rsync_proxy_connection_duration_seconds{%s} %.3f\n", prometheusLabels(index, module, upstream), duration)
+	}
+}
