@@ -701,6 +701,88 @@ func (s *Server) ListConnectionInfo() (result []*ConnInfo) {
 	return
 }
 
+func prometheusEscapeLabelValue(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return s
+}
+
+func prometheusLabelValueOrUnknown(s string) string {
+	if s == "" {
+		return "unknown"
+	}
+	return s
+}
+
+func prometheusLabels(index uint32, module, upstream string) string {
+	return fmt.Sprintf(
+		`index="%d",module="%s",upstream="%s"`,
+		index,
+		prometheusEscapeLabelValue(prometheusLabelValueOrUnknown(module)),
+		prometheusEscapeLabelValue(prometheusLabelValueOrUnknown(upstream)),
+	)
+}
+
+func (s *Server) writePrometheusMetrics(w io.Writer, now time.Time) {
+	connections := s.ListConnectionInfo()
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_active_connections Current active rsync proxy connections.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_active_connections gauge")
+	_, _ = fmt.Fprintf(w, "rsync_proxy_active_connections %d\n", s.GetActiveConnectionCount())
+
+	connectionCounts := make(map[string]int)
+	for _, conn := range connections {
+		module := prometheusLabelValueOrUnknown(conn.Module)
+		upstream := prometheusLabelValueOrUnknown(conn.UpstreamAddr)
+		key := module + "\xff" + upstream
+		connectionCounts[key]++
+	}
+
+	keys := make([]string, 0, len(connectionCounts))
+	for key := range connectionCounts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_active_connections_by_module Current active rsync proxy connections by module and upstream.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_active_connections_by_module gauge")
+	for _, key := range keys {
+		parts := strings.SplitN(key, "\xff", 2)
+		module := prometheusEscapeLabelValue(parts[0])
+		upstream := prometheusEscapeLabelValue(parts[1])
+		_, _ = fmt.Fprintf(w, "rsync_proxy_active_connections_by_module{module=\"%s\",upstream=\"%s\"} %d\n", module, upstream, connectionCounts[key])
+	}
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_connection_sent_bytes Bytes sent to clients for active connections.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_connection_sent_bytes gauge")
+	for _, conn := range connections {
+		_, _ = fmt.Fprintf(w, "rsync_proxy_connection_sent_bytes{%s} %d\n", prometheusLabels(conn.Index, conn.Module, conn.UpstreamAddr), conn.SentBytes.Load())
+	}
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_connection_received_bytes Bytes received from clients for active connections.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_connection_received_bytes gauge")
+	for _, conn := range connections {
+		_, _ = fmt.Fprintf(w, "rsync_proxy_connection_received_bytes{%s} %d\n", prometheusLabels(conn.Index, conn.Module, conn.UpstreamAddr), conn.ReceivedBytes.Load())
+	}
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_connection_connected_timestamp_seconds Unix timestamp when active connections were established.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_connection_connected_timestamp_seconds gauge")
+	for _, conn := range connections {
+		_, _ = fmt.Fprintf(w, "rsync_proxy_connection_connected_timestamp_seconds{%s} %d\n", prometheusLabels(conn.Index, conn.Module, conn.UpstreamAddr), conn.ConnectedAt.Unix())
+	}
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_connection_duration_seconds Current duration of active connections.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_connection_duration_seconds gauge")
+	for _, conn := range connections {
+		duration := now.Sub(conn.ConnectedAt).Seconds()
+		if duration < 0 {
+			duration = 0
+		}
+		_, _ = fmt.Fprintf(w, "rsync_proxy_connection_duration_seconds{%s} %.0f\n", prometheusLabels(conn.Index, conn.Module, conn.UpstreamAddr), duration)
+	}
+}
+
 func (s *Server) runHTTPServer() error {
 	hostname, err := os.Hostname()
 	if err != nil {
@@ -802,6 +884,16 @@ func (s *Server) runHTTPServer() error {
 		count := s.GetActiveConnectionCount()
 		// https://docs.influxdata.com/influxdb/latest/reference/syntax/line-protocol/
 		_, _ = fmt.Fprintf(w, "rsync-proxy,host=%s count=%d %d\n", hostname, count, timestamp)
+	})
+
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		s.writePrometheusMetrics(w, time.Now())
 	})
 
 	return http.Serve(s.HTTPListener, &mux)
