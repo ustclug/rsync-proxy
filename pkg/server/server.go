@@ -61,6 +61,17 @@ type ConnInfo struct {
 	ReceivedBytes atomic.Int64
 }
 
+type connInfoSnapshot struct {
+	Index         uint32    `json:"index"`
+	LocalAddr     string    `json:"local"`
+	RemoteAddr    string    `json:"remote"`
+	ConnectedAt   time.Time `json:"connected"`
+	Module        string    `json:"module"`
+	UpstreamAddr  string    `json:"upstream"`
+	SentBytes     int64     `json:"sentBytes"`
+	ReceivedBytes int64     `json:"receivedBytes"`
+}
+
 func (c *ConnInfo) SetModule(module string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -73,34 +84,23 @@ func (c *ConnInfo) SetUpstreamAddr(upstreamAddr string) {
 	c.UpstreamAddr = upstreamAddr
 }
 
-func (c *ConnInfo) snapshot() (index uint32, module, upstreamAddr string, connectedAt time.Time, sentBytes, receivedBytes int64) {
+func (c *ConnInfo) snapshot() connInfoSnapshot {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.Index, c.Module, c.UpstreamAddr, c.ConnectedAt, c.SentBytes.Load(), c.ReceivedBytes.Load()
+	return connInfoSnapshot{
+		Index:         c.Index,
+		LocalAddr:     c.LocalAddr,
+		RemoteAddr:    c.RemoteAddr,
+		ConnectedAt:   c.ConnectedAt,
+		Module:        c.Module,
+		UpstreamAddr:  c.UpstreamAddr,
+		SentBytes:     c.SentBytes.Load(),
+		ReceivedBytes: c.ReceivedBytes.Load(),
+	}
 }
 
 func (c *ConnInfo) MarshalJSON() ([]byte, error) {
-	index, module, upstreamAddr, connectedAt, sentBytes, receivedBytes := c.snapshot()
-	// Handle atomic value (cannot marshal directly)
-	return json.Marshal(struct {
-		Index         uint32    `json:"index"`
-		LocalAddr     string    `json:"local"`
-		RemoteAddr    string    `json:"remote"`
-		ConnectedAt   time.Time `json:"connected"`
-		Module        string    `json:"module"`
-		UpstreamAddr  string    `json:"upstream"`
-		SentBytes     int64     `json:"sentBytes"`
-		ReceivedBytes int64     `json:"receivedBytes"`
-	}{
-		Index:         index,
-		LocalAddr:     c.LocalAddr,
-		RemoteAddr:    c.RemoteAddr,
-		ConnectedAt:   connectedAt,
-		Module:        module,
-		UpstreamAddr:  upstreamAddr,
-		SentBytes:     sentBytes,
-		ReceivedBytes: receivedBytes,
-	})
+	return json.Marshal(c.snapshot())
 }
 
 type Target struct {

@@ -45,10 +45,10 @@ func (s *Server) writePrometheusMetrics(w io.Writer, now time.Time) {
 
 	connectionCounts := make(map[prometheusConnectionGroup]int)
 	for _, conn := range connections {
-		_, module, upstream, _, _, _ := conn.snapshot()
+		snapshot := conn.snapshot()
 		key := prometheusConnectionGroup{
-			module:   prometheusLabelValueOrUnknown(module),
-			upstream: prometheusLabelValueOrUnknown(upstream),
+			module:   prometheusLabelValueOrUnknown(snapshot.Module),
+			upstream: prometheusLabelValueOrUnknown(snapshot.UpstreamAddr),
 		}
 		connectionCounts[key]++
 	}
@@ -75,32 +75,32 @@ func (s *Server) writePrometheusMetrics(w io.Writer, now time.Time) {
 	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_connection_sent_bytes Bytes sent to clients for active connections.")
 	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_connection_sent_bytes gauge")
 	for _, conn := range connections {
-		index, module, upstream, _, sentBytes, _ := conn.snapshot()
-		_, _ = fmt.Fprintf(w, "rsync_proxy_connection_sent_bytes{%s} %d\n", prometheusLabels(index, module, upstream), sentBytes)
+		snapshot := conn.snapshot()
+		_, _ = fmt.Fprintf(w, "rsync_proxy_connection_sent_bytes{%s} %d\n", prometheusLabels(snapshot.Index, snapshot.Module, snapshot.UpstreamAddr), snapshot.SentBytes)
 	}
 
 	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_connection_received_bytes Bytes received from clients for active connections.")
 	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_connection_received_bytes gauge")
 	for _, conn := range connections {
-		index, module, upstream, _, _, receivedBytes := conn.snapshot()
-		_, _ = fmt.Fprintf(w, "rsync_proxy_connection_received_bytes{%s} %d\n", prometheusLabels(index, module, upstream), receivedBytes)
+		snapshot := conn.snapshot()
+		_, _ = fmt.Fprintf(w, "rsync_proxy_connection_received_bytes{%s} %d\n", prometheusLabels(snapshot.Index, snapshot.Module, snapshot.UpstreamAddr), snapshot.ReceivedBytes)
 	}
 
 	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_connection_connected_timestamp_seconds Unix timestamp when active connections were established.")
 	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_connection_connected_timestamp_seconds gauge")
 	for _, conn := range connections {
-		index, module, upstream, connectedAt, _, _ := conn.snapshot()
-		_, _ = fmt.Fprintf(w, "rsync_proxy_connection_connected_timestamp_seconds{%s} %d\n", prometheusLabels(index, module, upstream), connectedAt.Unix())
+		snapshot := conn.snapshot()
+		_, _ = fmt.Fprintf(w, "rsync_proxy_connection_connected_timestamp_seconds{%s} %d\n", prometheusLabels(snapshot.Index, snapshot.Module, snapshot.UpstreamAddr), snapshot.ConnectedAt.Unix())
 	}
 
 	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_connection_duration_seconds Current duration of active connections.")
 	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_connection_duration_seconds gauge")
 	for _, conn := range connections {
-		index, module, upstream, connectedAt, _, _ := conn.snapshot()
-		duration := now.Sub(connectedAt).Seconds()
+		snapshot := conn.snapshot()
+		duration := now.Sub(snapshot.ConnectedAt).Seconds()
 		if duration < 0 {
 			duration = 0
 		}
-		_, _ = fmt.Fprintf(w, "rsync_proxy_connection_duration_seconds{%s} %.3f\n", prometheusLabels(index, module, upstream), duration)
+		_, _ = fmt.Fprintf(w, "rsync_proxy_connection_duration_seconds{%s} %.3f\n", prometheusLabels(snapshot.Index, snapshot.Module, snapshot.UpstreamAddr), duration)
 	}
 }

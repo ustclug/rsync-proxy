@@ -41,6 +41,7 @@ linters:
     rules:
       - linters:
           - errcheck
+          - goconst
           - unparam
         path: _test.go
     paths:

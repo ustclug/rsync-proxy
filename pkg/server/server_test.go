@@ -343,8 +343,7 @@ func TestStatusIncludesSelectedUpstream(t *testing.T) {
 		if len(infos) != 1 {
 			return false
 		}
-		_, _, infoUpstreamAddr, _, _, _ := infos[0].snapshot()
-		return infoUpstreamAddr == upstreamAddr
+		return infos[0].snapshot().UpstreamAddr == upstreamAddr
 	}, time.Second, 10*time.Millisecond)
 
 	wg.Done()
@@ -414,8 +413,7 @@ func TestMetricsIncludesActiveConnections(t *testing.T) {
 		if len(infos) != 1 {
 			return false
 		}
-		_, _, infoUpstreamAddr, _, _, _ := infos[0].snapshot()
-		return infoUpstreamAddr == upstreamAddr
+		return infos[0].snapshot().UpstreamAddr == upstreamAddr
 	}, time.Second, 10*time.Millisecond)
 
 	resp, err := testHTTPClient().Get("http://" + srv.HTTPListener.Addr().String() + "/metrics")
