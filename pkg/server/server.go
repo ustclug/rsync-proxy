@@ -50,6 +50,7 @@ var (
 const lineFeed = '\n'
 
 type ConnInfo struct {
+	mu            sync.RWMutex
 	Index         uint32
 	LocalAddr     string
 	RemoteAddr    string
@@ -60,18 +61,33 @@ type ConnInfo struct {
 	ReceivedBytes atomic.Int64
 }
 
-func (c *ConnInfo) MarshalJSON() ([]byte, error) {
-	// Handle atomic value (cannot marshal directly)
-	return json.Marshal(struct {
-		Index         uint32    `json:"index"`
-		LocalAddr     string    `json:"local"`
-		RemoteAddr    string    `json:"remote"`
-		ConnectedAt   time.Time `json:"connected"`
-		Module        string    `json:"module"`
-		UpstreamAddr  string    `json:"upstream"`
-		SentBytes     int64     `json:"sentBytes"`
-		ReceivedBytes int64     `json:"receivedBytes"`
-	}{
+type connInfoSnapshot struct {
+	Index         uint32    `json:"index"`
+	LocalAddr     string    `json:"local"`
+	RemoteAddr    string    `json:"remote"`
+	ConnectedAt   time.Time `json:"connected"`
+	Module        string    `json:"module"`
+	UpstreamAddr  string    `json:"upstream"`
+	SentBytes     int64     `json:"sentBytes"`
+	ReceivedBytes int64     `json:"receivedBytes"`
+}
+
+func (c *ConnInfo) SetModule(module string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Module = module
+}
+
+func (c *ConnInfo) SetUpstreamAddr(upstreamAddr string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.UpstreamAddr = upstreamAddr
+}
+
+func (c *ConnInfo) snapshot() connInfoSnapshot {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return connInfoSnapshot{
 		Index:         c.Index,
 		LocalAddr:     c.LocalAddr,
 		RemoteAddr:    c.RemoteAddr,
@@ -80,7 +96,11 @@ func (c *ConnInfo) MarshalJSON() ([]byte, error) {
 		UpstreamAddr:  c.UpstreamAddr,
 		SentBytes:     c.SentBytes.Load(),
 		ReceivedBytes: c.ReceivedBytes.Load(),
-	})
+	}
+}
+
+func (c *ConnInfo) MarshalJSON() ([]byte, error) {
+	return json.Marshal(c.snapshot())
 }
 
 type Target struct {
@@ -537,8 +557,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	}
 
 	moduleName := string(buf[:n-1]) // trim trailing \n
-	info.Module = moduleName
-	s.connInfo.Store(index, &info)
+	info.SetModule(moduleName)
 
 	targets, ok := s.getTargetsForModule(moduleName)
 	if !ok {
@@ -557,8 +576,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	target := targets[chooseTargetByClientIP(net.ParseIP(ip), len(targets))]
 	upstreamAddr := target.Addr
 	useProxyProtocol := target.UseProxyProtocol
-	info.UpstreamAddr = upstreamAddr
-	s.connInfo.Store(index, &info)
+	info.SetUpstreamAddr(upstreamAddr)
 
 	upstreamQueue, ok := s.getQueueForUpstream(target.Upstream)
 	if !ok {
@@ -808,6 +826,16 @@ func (s *Server) runHTTPServer() error {
 		count := s.GetActiveConnectionCount()
 		// https://docs.influxdata.com/influxdb/latest/reference/syntax/line-protocol/
 		_, _ = fmt.Fprintf(w, "rsync-proxy,host=%s count=%d %d\n", hostname, count, timestamp)
+	})
+
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		s.writePrometheusMetrics(w, time.Now())
 	})
 
 	return http.Serve(s.HTTPListener, &mux)
