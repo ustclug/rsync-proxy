@@ -129,6 +129,38 @@ func TestMotdFromServer(t *testing.T) {
 	r.Equal(proxyMotd+"\n"+serverMotd, string(allData))
 }
 
+// TestUnknownModuleSendsErrorPrefix verifies that requesting a module that
+// the proxy is not configured to serve makes the proxy reply with an
+// "@ERROR:" line, matching real rsyncd's wire format. The rsync client
+// treats an "@ERROR:" reply as a fatal protocol error and exits 5,
+// while a plain message followed by "@RSYNCD: EXIT" causes the client
+// to exit 0, which historically masked configuration breakage in tools
+// such as tunasync.
+func TestUnknownModuleSendsErrorPrefix(t *testing.T) {
+	srv := startServer(t)
+	defer srv.Close()
+
+	srv.modules = map[string][]Target{}
+	srv.upstreamQueues = map[string]*queue.Queue{}
+
+	r := require.New(t)
+
+	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	r.NoError(err)
+	conn := rsync.NewConn(rawConn)
+	defer conn.Close()
+
+	_, err = doClientHandshake(conn, RsyncdServerVersion, "does-not-exist")
+	r.NoError(err)
+
+	allData, err := io.ReadAll(conn)
+	r.NoError(err)
+
+	r.Contains(string(allData), "@ERROR:", "proxy should reply with @ERROR: prefix so client exits non-zero")
+	r.Contains(string(allData), "does-not-exist")
+	r.NotContains(string(allData), "@RSYNCD: EXIT", "should not send EXIT after @ERROR; rsync client must treat the response as fatal")
+}
+
 // See also: https://github.com/ustclug/rsync-proxy/commit/d581c18dab8008c5bc9c1a5d667b49d67a4edfed
 func TestClientReadTimeout(t *testing.T) {
 	srv := startServer(t)

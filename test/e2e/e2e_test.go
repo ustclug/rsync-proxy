@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -246,4 +247,28 @@ func TestDiscoverModulesFromUpstream(t *testing.T) {
 	}
 
 	r.Equal("bar\nbaz\nfoo\n", string(outputBytes))
+}
+
+// TestUnknownModuleExitCode verifies that a real rsync client exits with
+// a non-zero status when it requests a module that the proxy does not
+// know about. This is a regression test for an earlier behavior where
+// the proxy emitted "unknown module: <name>\n@RSYNCD: EXIT\n", which
+// rsync interprets as a normal end-of-listing (exit 0). The fix makes
+// the proxy emit "@ERROR:" instead, matching real rsyncd; rsync then
+// treats it as a fatal protocol error and exits with code 5
+// (RERR_FERROR_XFER).
+func TestUnknownModuleExitCode(t *testing.T) {
+	proxy := startProxy(t)
+
+	r := require.New(t)
+
+	cmd := newRsyncCommand(getRsyncPath(proxy, "/does-not-exist/"))
+	out, err := cmd.CombinedOutput()
+	r.Error(err, "rsync should fail when module does not exist; got output: %s", out)
+
+	exitErr, ok := err.(*exec.ExitError)
+	r.True(ok, "expected *exec.ExitError, got %T: %v", err, err)
+	r.NotEqual(0, exitErr.ExitCode(), "rsync should exit non-zero on unknown module; output: %s", out)
+	r.Contains(string(out), "@ERROR", "rsync should report the @ERROR line; output: %s", out)
+	r.Contains(string(out), "does-not-exist", "rsync should report the module name; output: %s", out)
 }
