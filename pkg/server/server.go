@@ -542,8 +542,14 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 
 	targets, ok := s.getTargetsForModule(moduleName)
 	if !ok {
-		_, _ = writeWithTimeout(downConn, fmt.Appendf(nil, "unknown module: %s\n", moduleName), writeTimeout)
-		_, _ = writeWithTimeout(downConn, RsyncdExit, writeTimeout)
+		// Use the rsyncd "@ERROR:" wire format so that the rsync
+		// client treats this as a fatal protocol error and exits with
+		// a non-zero status (RERR_FERROR_XFER, exit 5), matching the
+		// behavior of a real rsyncd. Sending only "unknown module:
+		// ...\n" followed by "@RSYNCD: EXIT" caused the client to
+		// exit 0, which masked the failure for downstream tools such
+		// as tunasync (which then marked the job as success).
+		_, _ = writeWithTimeout(downConn, fmt.Appendf(nil, "@ERROR: Unknown module '%s'\n", moduleName), writeTimeout)
 		s.accessLog.F("client %s requests non-existing module %s", ip, moduleName)
 		return nil
 	}
