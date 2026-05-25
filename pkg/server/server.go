@@ -147,10 +147,10 @@ type Server struct {
 	connIndex       atomic.Uint32
 	connInfo        sync.Map
 
-	acceptedConnTotal atomic.Uint64
-	completedConns    atomic.Int64
-	sentBytesTotal    atomic.Int64
-	recvBytesTotal    atomic.Int64
+	acceptedConnCount  atomic.Uint64
+	completedConnCount atomic.Uint64
+	sentBytesTotal     atomic.Uint64
+	recvBytesTotal     atomic.Uint64
 
 	TCPListener  net.Listener
 	TLSListener  net.Listener
@@ -713,9 +713,9 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	sentBytes := info.SentBytes.Load()
 	receivedBytes := info.ReceivedBytes.Load()
 
-	s.completedConns.Add(1)
-	s.sentBytesTotal.Add(sentBytes)
-	s.recvBytesTotal.Add(receivedBytes)
+	s.completedConnCount.Add(1)
+	s.sentBytesTotal.Add(uint64(sentBytes))
+	s.recvBytesTotal.Add(uint64(receivedBytes))
 
 	duration := time.Since(info.ConnectedAt)
 	s.accessLog.F("client %s finishes module %s (sent: %d, received: %d, duration: %s)", ip, moduleName, sentBytes, receivedBytes, duration)
@@ -906,7 +906,7 @@ func (s *Server) Close() {
 func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	s.activeConnCount.Add(1)
 	defer s.activeConnCount.Add(-1)
-	s.acceptedConnTotal.Add(1)
+	s.acceptedConnCount.Add(1)
 	connIndex := s.connIndex.Add(1)
 
 	defer func() {
