@@ -147,6 +147,11 @@ type Server struct {
 	connIndex       atomic.Uint32
 	connInfo        sync.Map
 
+	acceptedConnTotal atomic.Uint64
+	completedConns    atomic.Int64
+	sentBytesTotal    atomic.Int64
+	recvBytesTotal    atomic.Int64
+
 	TCPListener  net.Listener
 	TLSListener  net.Listener
 	HTTPListener net.Listener
@@ -695,14 +700,22 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 		if err := closeRead(upConn, true); err != nil {
 			s.errorLog.F("close upstream read: %v", err)
 		}
+		downConn.Close()
 	case <-sentClosed:
 		if err := closeRead(downConn, false); err != nil {
 			s.errorLog.F("close downstream read: %v", err)
 		}
+		upConn.Close()
 	}
+	<-sentClosed
+	<-receivedClosed
 
 	sentBytes := info.SentBytes.Load()
 	receivedBytes := info.ReceivedBytes.Load()
+
+	s.completedConns.Add(1)
+	s.sentBytesTotal.Add(sentBytes)
+	s.recvBytesTotal.Add(receivedBytes)
 
 	duration := time.Since(info.ConnectedAt)
 	s.accessLog.F("client %s finishes module %s (sent: %d, received: %d, duration: %s)", ip, moduleName, sentBytes, receivedBytes, duration)
@@ -893,6 +906,7 @@ func (s *Server) Close() {
 func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	s.activeConnCount.Add(1)
 	defer s.activeConnCount.Add(-1)
+	s.acceptedConnTotal.Add(1)
 	connIndex := s.connIndex.Add(1)
 
 	defer func() {

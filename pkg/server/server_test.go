@@ -505,6 +505,65 @@ func TestPrometheusDurationIncludesFractionalSeconds(t *testing.T) {
 	assert.Contains(t, buf.String(), "rsync_proxy_connection_duration_seconds{index=\"1\",module=\"fake\",upstream=\"127.0.0.1:873\"} 0.250\n")
 }
 
+func TestMetricsIncludesLifetimeCounters(t *testing.T) {
+	srv := startServer(t)
+	defer srv.Close()
+
+	payload := []byte("payload from upstream\n")
+	fakeRsync := rsync.NewServer(func(conn *rsync.Conn) {
+		defer conn.Close()
+		_, _, err := doServerHandshake(conn, RsyncdServerVersion)
+		require.NoError(t, err)
+		_, err = conn.Write(payload)
+		require.NoError(t, err)
+	})
+	fakeRsync.Start()
+	defer fakeRsync.Close()
+
+	upstreamAddr := fakeRsync.Listener.Addr().String()
+	srv.modules = map[string][]Target{
+		"fake": {{Upstream: "u1", Addr: upstreamAddr}},
+	}
+	srv.upstreamQueues = map[string]*queue.Queue{"u1": queue.New(0, 0)}
+
+	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	require.NoError(t, err)
+	conn := rsync.NewConn(rawConn)
+	defer conn.Close()
+
+	_, err = doClientHandshake(conn, RsyncdServerVersion, "fake")
+	require.NoError(t, err)
+
+	_, err = io.ReadAll(conn)
+	require.NoError(t, err)
+	conn.Close()
+
+	require.Eventually(t, func() bool {
+		return srv.GetActiveConnectionCount() == 0
+	}, 3*time.Second, 10*time.Millisecond)
+
+	resp, err := testHTTPClient().Get("http://" + srv.HTTPListener.Addr().String() + "/metrics")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	text := string(body)
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Contains(t, text, "# HELP rsync_proxy_accepted_connections_total")
+	assert.Contains(t, text, "# TYPE rsync_proxy_accepted_connections_total counter")
+	assert.Contains(t, text, "rsync_proxy_accepted_connections_total 1\n")
+	assert.Contains(t, text, "# HELP rsync_proxy_completed_connections_total")
+	assert.Contains(t, text, "# TYPE rsync_proxy_completed_connections_total counter")
+	assert.Contains(t, text, "rsync_proxy_completed_connections_total 1\n")
+	assert.Contains(t, text, "# HELP rsync_proxy_sent_bytes_total")
+	assert.Contains(t, text, "# TYPE rsync_proxy_sent_bytes_total counter")
+	assert.Contains(t, text, fmt.Sprintf("rsync_proxy_sent_bytes_total %d\n", len(payload)))
+	assert.Contains(t, text, "# HELP rsync_proxy_received_bytes_total")
+	assert.Contains(t, text, "# TYPE rsync_proxy_received_bytes_total counter")
+}
+
 func TestPrometheusLabelValueEscaping(t *testing.T) {
 	assert.Equal(t, `plain`, prometheusEscapeLabelValue("plain"))
 	assert.Equal(t, `quote\"value`, prometheusEscapeLabelValue(`quote"value`))
