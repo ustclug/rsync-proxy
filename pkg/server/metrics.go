@@ -103,4 +103,20 @@ func (s *Server) writePrometheusMetrics(w io.Writer, now time.Time) {
 		}
 		_, _ = fmt.Fprintf(w, "rsync_proxy_connection_duration_seconds{%s} %.3f\n", prometheusLabels(snapshot.Index, snapshot.Module, snapshot.UpstreamAddr), duration)
 	}
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_accepted_connections_total Total accepted connections since start.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_accepted_connections_total counter")
+	_, _ = fmt.Fprintf(w, "rsync_proxy_accepted_connections_total %d\n", s.acceptedConnCount.Load())
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_completed_connections_total Total completed connections since start.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_completed_connections_total counter")
+	_, _ = fmt.Fprintf(w, "rsync_proxy_completed_connections_total %d\n", s.completedConnCount.Load())
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_sent_bytes_total Total bytes sent to clients since start.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_sent_bytes_total counter")
+	_, _ = fmt.Fprintf(w, "rsync_proxy_sent_bytes_total %d\n", s.sentBytesTotal.Load())
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_received_bytes_total Total bytes received from clients since start.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_received_bytes_total counter")
+	_, _ = fmt.Fprintf(w, "rsync_proxy_received_bytes_total %d\n", s.recvBytesTotal.Load())
 }
