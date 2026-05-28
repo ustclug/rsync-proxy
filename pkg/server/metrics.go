@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/ustclug/rsync-proxy/pkg/queue"
 )
 
 func prometheusEscapeLabelValue(s string) string {
@@ -40,8 +42,12 @@ func (s *Server) writePrometheusMetrics(w io.Writer, now time.Time) {
 	connections := s.ListConnectionInfo()
 
 	s.reloadLock.RLock()
-	upstreams := s.upstreams
-	queues := s.upstreamQueues
+	upstreams := make([]upstreamConfig, len(s.upstreams))
+	copy(upstreams, s.upstreams)
+	queues := make(map[string]*queue.Queue, len(s.upstreamQueues))
+	for k, v := range s.upstreamQueues {
+		queues[k] = v
+	}
 	s.reloadLock.RUnlock()
 
 	sort.Slice(upstreams, func(i, j int) bool {

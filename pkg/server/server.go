@@ -858,7 +858,7 @@ func (s *Server) runHTTPServer() error {
 		}
 
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-		promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{DisableCompression: true}).ServeHTTP(w, r)
+		promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{DisableCompression: true, EnableOpenMetrics: false}).ServeHTTP(w, r)
 		s.writePrometheusMetrics(w, time.Now())
 	})
 
