@@ -24,6 +24,9 @@ import (
 
 	"github.com/ustclug/rsync-proxy/pkg/logging"
 	"github.com/ustclug/rsync-proxy/pkg/queue"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 const (
@@ -151,6 +154,10 @@ type Server struct {
 	completedConnCount atomic.Uint64
 	sentBytesTotal     atomic.Uint64
 	recvBytesTotal     atomic.Uint64
+
+	queueFullConnCount     atomic.Uint64
+	upstreamDialErrorCount atomic.Uint64
+	unknownModuleCount     atomic.Uint64
 
 	TCPListener  net.Listener
 	TLSListener  net.Listener
@@ -573,6 +580,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 		// ...\n" followed by "@RSYNCD: EXIT" caused the client to
 		// exit 0, which masked the failure for downstream tools such
 		// as tunasync (which then marked the job as success).
+		s.unknownModuleCount.Add(1)
 		_, _ = writeWithTimeout(downConn, fmt.Appendf(nil, "@ERROR: Unknown module '%s'\n", moduleName), writeTimeout)
 		s.accessLog.F("client %s requests non-existing module %s", ip, moduleName)
 		return nil
@@ -592,6 +600,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	defer handle.Release()
 	status := <-handle.C
 	if status.Full {
+		s.queueFullConnCount.Add(1)
 		s.accessLog.F("client %s queue full for module %s", ip, moduleName)
 		_, _ = writeWithTimeout(downConn, []byte("Server queue is full for this upstream. Please retry later.\n"), writeTimeout)
 		_, _ = writeWithTimeout(downConn, RsyncdExit, writeTimeout)
@@ -627,6 +636,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 
 	upConn, err := dialContextTCPOrUnix(ctx, s.dialer, upstreamAddr)
 	if err != nil {
+		s.upstreamDialErrorCount.Add(1)
 		return fmt.Errorf("dial to upstream: %s: %w", upstreamAddr, err)
 	}
 	defer upConn.Close()
@@ -848,6 +858,7 @@ func (s *Server) runHTTPServer() error {
 		}
 
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{DisableCompression: true}).ServeHTTP(w, r)
 		s.writePrometheusMetrics(w, time.Now())
 	})
 

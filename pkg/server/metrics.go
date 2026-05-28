@@ -39,6 +39,54 @@ type prometheusConnectionGroup struct {
 func (s *Server) writePrometheusMetrics(w io.Writer, now time.Time) {
 	connections := s.ListConnectionInfo()
 
+	s.reloadLock.RLock()
+	upstreams := s.upstreams
+	queues := s.upstreamQueues
+	s.reloadLock.RUnlock()
+
+	sort.Slice(upstreams, func(i, j int) bool {
+		return upstreams[i].Name < upstreams[j].Name
+	})
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_queued_connections Current queued rsync proxy connections per upstream.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_queued_connections gauge")
+	for _, u := range upstreams {
+		if q, ok := queues[u.Name]; ok {
+			_, _ = fmt.Fprintf(w, "rsync_proxy_queued_connections{upstream=\"%s\"} %d\n",
+				prometheusEscapeLabelValue(u.Name), q.QueuedLen())
+		}
+	}
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_queue_active_max Configured max active connections per upstream.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_queue_active_max gauge")
+	for _, u := range upstreams {
+		if q, ok := queues[u.Name]; ok {
+			_, _ = fmt.Fprintf(w, "rsync_proxy_queue_active_max{upstream=\"%s\"} %d\n",
+				prometheusEscapeLabelValue(u.Name), q.GetMax())
+		}
+	}
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_queue_queued_max Configured max queued connections per upstream.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_queue_queued_max gauge")
+	for _, u := range upstreams {
+		if q, ok := queues[u.Name]; ok {
+			_, _ = fmt.Fprintf(w, "rsync_proxy_queue_queued_max{upstream=\"%s\"} %d\n",
+				prometheusEscapeLabelValue(u.Name), q.GetMaxQueued())
+		}
+	}
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_queue_full_rejected_total Total connections rejected due to queue full.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_queue_full_rejected_total counter")
+	_, _ = fmt.Fprintf(w, "rsync_proxy_queue_full_rejected_total %d\n", s.queueFullConnCount.Load())
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_upstream_dial_errors_total Total upstream dial failures.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_upstream_dial_errors_total counter")
+	_, _ = fmt.Fprintf(w, "rsync_proxy_upstream_dial_errors_total %d\n", s.upstreamDialErrorCount.Load())
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_unknown_module_requests_total Total requests for unknown modules.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_unknown_module_requests_total counter")
+	_, _ = fmt.Fprintf(w, "rsync_proxy_unknown_module_requests_total %d\n", s.unknownModuleCount.Load())
+
 	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_active_connections Current active rsync proxy connections.")
 	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_active_connections gauge")
 	_, _ = fmt.Fprintf(w, "rsync_proxy_active_connections %d\n", s.GetActiveConnectionCount())

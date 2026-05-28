@@ -47,6 +47,27 @@ func (q *Queue) GetMax() int {
 	return ret
 }
 
+func (q *Queue) GetMaxQueued() int {
+	q.mu.Lock()
+	ret := q.maxQueued
+	q.mu.Unlock()
+	return ret
+}
+
+func (q *Queue) ActiveLen() int {
+	q.mu.Lock()
+	ret := len(q.active)
+	q.mu.Unlock()
+	return ret
+}
+
+func (q *Queue) QueuedLen() int {
+	q.mu.Lock()
+	ret := len(q.queued)
+	q.mu.Unlock()
+	return ret
+}
+
 func (q *Queue) SetMax(max, maxQueued int) {
 	q.mu.Lock()
 	q.max, q.maxQueued = max, maxQueued

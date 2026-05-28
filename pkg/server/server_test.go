@@ -394,7 +394,7 @@ func TestMetricsEndpointNoConnections(t *testing.T) {
 	text := string(body)
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, "text/plain; version=0.0.4; charset=utf-8", resp.Header.Get("Content-Type"))
+	assert.Contains(t, resp.Header.Get("Content-Type"), "text/plain; version=0.0.4")
 	assert.Contains(t, text, "# HELP rsync_proxy_active_connections Current active rsync proxy connections.")
 	assert.Contains(t, text, "# TYPE rsync_proxy_active_connections gauge")
 	assert.Contains(t, text, "rsync_proxy_active_connections 0\n")
