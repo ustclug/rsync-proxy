@@ -81,13 +81,21 @@ func (s *Server) writePrometheusMetrics(w io.Writer, now time.Time) {
 		}
 	}
 
-	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_queue_full_rejected_total Total connections rejected due to queue full.")
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_queue_full_rejected_total Total connections rejected due to queue full per upstream.")
 	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_queue_full_rejected_total counter")
-	_, _ = fmt.Fprintf(w, "rsync_proxy_queue_full_rejected_total %d\n", s.queueFullConnCount.Load())
+	for _, u := range upstreams {
+		c := s.getUpstreamCounters(u.Name)
+		_, _ = fmt.Fprintf(w, "rsync_proxy_queue_full_rejected_total{upstream=\"%s\"} %d\n",
+			prometheusEscapeLabelValue(u.Name), c.queueFull.Load())
+	}
 
-	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_upstream_dial_errors_total Total upstream dial failures.")
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_upstream_dial_errors_total Total upstream dial failures per upstream.")
 	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_upstream_dial_errors_total counter")
-	_, _ = fmt.Fprintf(w, "rsync_proxy_upstream_dial_errors_total %d\n", s.upstreamDialErrorCount.Load())
+	for _, u := range upstreams {
+		c := s.getUpstreamCounters(u.Name)
+		_, _ = fmt.Fprintf(w, "rsync_proxy_upstream_dial_errors_total{upstream=\"%s\"} %d\n",
+			prometheusEscapeLabelValue(u.Name), c.dialError.Load())
+	}
 
 	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_unknown_module_requests_total Total requests for unknown modules.")
 	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_unknown_module_requests_total counter")
