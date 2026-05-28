@@ -14,7 +14,7 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -s -w -X github.com/ustclug/rsync-proxy/pkg/info.Version={{.Version}} -X github.com/ustclug/rsync-proxy/pkg/info.BuildDate={{.Date}} -X github.com/ustclug/rsync-proxy/pkg/info.GitCommit={{.Commit}}
+      - -s -w -X github.com/ustclug/rsync-proxy/cmd.Version={{.Version}} -X github.com/ustclug/rsync-proxy/cmd.BuildDate={{.Date}} -X github.com/ustclug/rsync-proxy/cmd.GitCommit={{.Commit}}
 archives:
   - formats: binary
     name_template: "{{ .Binary }}_{{ .Os  }}_{{ .Arch }}"
