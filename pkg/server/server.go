@@ -22,6 +22,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/ustclug/rsync-proxy/pkg/logging"
 	"github.com/ustclug/rsync-proxy/pkg/queue"
 )
@@ -118,6 +121,12 @@ type upstreamConfig struct {
 	MaxQueuedConns  int
 }
 
+// upstreamCounters holds per-upstream failure counters.
+type upstreamCounters struct {
+	queueFull atomic.Uint64
+	dialError atomic.Uint64
+}
+
 type Server struct {
 	// --- Options section
 	// Listen Address
@@ -151,6 +160,11 @@ type Server struct {
 	completedConnCount atomic.Uint64
 	sentBytesTotal     atomic.Uint64
 	recvBytesTotal     atomic.Uint64
+
+	// Per-upstream failure counters. Lazy-initialized via getUpstreamCounters.
+	// map key is upstream name. Value is *upstreamCounters.
+	upstreamCounters   sync.Map
+	unknownModuleCount atomic.Uint64
 
 	TCPListener  net.Listener
 	TLSListener  net.Listener
@@ -320,6 +334,16 @@ func (s *Server) getQueueForUpstream(name string) (*queue.Queue, bool) {
 	defer s.reloadLock.RUnlock()
 	q, ok := s.upstreamQueues[name]
 	return q, ok
+}
+
+// getUpstreamCounters returns the per-upstream counters, creating them lazily
+// on first reference. Safe for concurrent use.
+func (s *Server) getUpstreamCounters(name string) *upstreamCounters {
+	if v, ok := s.upstreamCounters.Load(name); ok {
+		return v.(*upstreamCounters)
+	}
+	v, _ := s.upstreamCounters.LoadOrStore(name, &upstreamCounters{})
+	return v.(*upstreamCounters)
 }
 
 func buildModuleTargets(upstreams []upstreamConfig) map[string][]Target {
@@ -573,6 +597,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 		// ...\n" followed by "@RSYNCD: EXIT" caused the client to
 		// exit 0, which masked the failure for downstream tools such
 		// as tunasync (which then marked the job as success).
+		s.unknownModuleCount.Add(1)
 		_, _ = writeWithTimeout(downConn, fmt.Appendf(nil, "@ERROR: Unknown module '%s'\n", moduleName), writeTimeout)
 		s.accessLog.F("client %s requests non-existing module %s", ip, moduleName)
 		return nil
@@ -592,6 +617,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	defer handle.Release()
 	status := <-handle.C
 	if status.Full {
+		s.getUpstreamCounters(target.Upstream).queueFull.Add(1)
 		s.accessLog.F("client %s queue full for module %s", ip, moduleName)
 		_, _ = writeWithTimeout(downConn, []byte("Server queue is full for this upstream. Please retry later.\n"), writeTimeout)
 		_, _ = writeWithTimeout(downConn, RsyncdExit, writeTimeout)
@@ -627,6 +653,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 
 	upConn, err := dialContextTCPOrUnix(ctx, s.dialer, upstreamAddr)
 	if err != nil {
+		s.getUpstreamCounters(target.Upstream).dialError.Add(1)
 		return fmt.Errorf("dial to upstream: %s: %w", upstreamAddr, err)
 	}
 	defer upConn.Close()
@@ -847,7 +874,12 @@ func (s *Server) runHTTPServer() error {
 			return
 		}
 
-		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		// promhttp.HandlerFor sets the Content-Type itself based on
+		// content negotiation; do not pre-set it here.
+		// EnableOpenMetrics is disabled so that no "# EOF" terminator is
+		// emitted, allowing us to append our own legacy text-format
+		// metrics after the runtime/process metrics.
+		promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{DisableCompression: true, EnableOpenMetrics: false}).ServeHTTP(w, r)
 		s.writePrometheusMetrics(w, time.Now())
 	})
 

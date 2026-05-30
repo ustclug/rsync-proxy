@@ -394,7 +394,7 @@ func TestMetricsEndpointNoConnections(t *testing.T) {
 	text := string(body)
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, "text/plain; version=0.0.4; charset=utf-8", resp.Header.Get("Content-Type"))
+	assert.Contains(t, resp.Header.Get("Content-Type"), "text/plain; version=0.0.4")
 	assert.Contains(t, text, "# HELP rsync_proxy_active_connections Current active rsync proxy connections.")
 	assert.Contains(t, text, "# TYPE rsync_proxy_active_connections gauge")
 	assert.Contains(t, text, "rsync_proxy_active_connections 0\n")
@@ -468,6 +468,186 @@ func TestMetricsIncludesActiveConnections(t *testing.T) {
 	assert.NotContains(t, text, rawConn.LocalAddr().String())
 
 	wg.Done()
+}
+
+func TestMetricsIncludesQueueGauges(t *testing.T) {
+	srv := startServer(t)
+	defer srv.Close()
+
+	// Configure two upstreams with different queue capacities to verify
+	// the gauges are emitted per upstream and reflect configuration.
+	srv.reloadLock.Lock()
+	srv.upstreams = []upstreamConfig{
+		{Name: "u1", MaxActiveConns: 1, MaxQueuedConns: 2},
+		{Name: "u2", MaxActiveConns: 0, MaxQueuedConns: 0},
+	}
+	srv.upstreamQueues = map[string]*queue.Queue{
+		"u1": queue.New(1, 2),
+		"u2": queue.New(0, 0),
+	}
+	srv.reloadLock.Unlock()
+
+	resp, err := testHTTPClient().Get("http://" + srv.HTTPListener.Addr().String() + "/metrics")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	text := string(body)
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// queued_connections gauge: nothing queued yet.
+	assert.Contains(t, text, "# HELP rsync_proxy_queued_connections")
+	assert.Contains(t, text, "# TYPE rsync_proxy_queued_connections gauge")
+	assert.Contains(t, text, "rsync_proxy_queued_connections{upstream=\"u1\"} 0\n")
+	assert.Contains(t, text, "rsync_proxy_queued_connections{upstream=\"u2\"} 0\n")
+
+	// queue_active_max gauge.
+	assert.Contains(t, text, "# HELP rsync_proxy_queue_active_max")
+	assert.Contains(t, text, "# TYPE rsync_proxy_queue_active_max gauge")
+	assert.Contains(t, text, "rsync_proxy_queue_active_max{upstream=\"u1\"} 1\n")
+	assert.Contains(t, text, "rsync_proxy_queue_active_max{upstream=\"u2\"} 0\n")
+
+	// queue_queued_max gauge.
+	assert.Contains(t, text, "# HELP rsync_proxy_queue_queued_max")
+	assert.Contains(t, text, "# TYPE rsync_proxy_queue_queued_max gauge")
+	assert.Contains(t, text, "rsync_proxy_queue_queued_max{upstream=\"u1\"} 2\n")
+	assert.Contains(t, text, "rsync_proxy_queue_queued_max{upstream=\"u2\"} 0\n")
+
+	// per-upstream failure counters initialized at zero.
+	assert.Contains(t, text, "rsync_proxy_queue_full_rejected_total{upstream=\"u1\"} 0\n")
+	assert.Contains(t, text, "rsync_proxy_queue_full_rejected_total{upstream=\"u2\"} 0\n")
+	assert.Contains(t, text, "rsync_proxy_upstream_dial_errors_total{upstream=\"u1\"} 0\n")
+	assert.Contains(t, text, "rsync_proxy_upstream_dial_errors_total{upstream=\"u2\"} 0\n")
+
+	// unknown module counter (no label).
+	assert.Contains(t, text, "rsync_proxy_unknown_module_requests_total 0\n")
+}
+
+func TestMetricsCountsQueueFullRejection(t *testing.T) {
+	srv := startServer(t)
+	defer srv.Close()
+
+	var release sync.WaitGroup
+	release.Add(1)
+
+	upstream := rsync.NewServer(func(conn *rsync.Conn) {
+		defer conn.Close()
+		_, _, err := doServerHandshake(conn, RsyncdServerVersion)
+		require.NoError(t, err)
+		release.Wait()
+	})
+	upstream.Start()
+	defer upstream.Close()
+
+	srv.reloadLock.Lock()
+	srv.upstreams = []upstreamConfig{
+		{Name: "u1", MaxActiveConns: 1, MaxQueuedConns: 1},
+	}
+	srv.modules = map[string][]Target{
+		"fake": {{Upstream: "u1", Addr: upstream.Listener.Addr().String()}},
+	}
+	srv.upstreamQueues = map[string]*queue.Queue{"u1": queue.New(1, 1)}
+	srv.reloadLock.Unlock()
+
+	// First connection occupies the active slot.
+	c1Raw, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	require.NoError(t, err)
+	c1 := rsync.NewConn(c1Raw)
+	defer c1.Close()
+	_, err = doClientHandshake(c1, RsyncdServerVersion, "fake")
+	require.NoError(t, err)
+
+	// Second connection fills the queued slot.
+	c2Raw, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	require.NoError(t, err)
+	c2 := rsync.NewConn(c2Raw)
+	defer c2.Close()
+	_, err = doClientHandshake(c2, RsyncdServerVersion, "fake")
+	require.NoError(t, err)
+	_, err = c2.ReadLine()
+	require.NoError(t, err)
+	_, err = c2.ReadLine()
+	require.NoError(t, err)
+
+	// Third connection should be rejected with queue-full.
+	c3Raw, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	require.NoError(t, err)
+	c3 := rsync.NewConn(c3Raw)
+	defer c3.Close()
+	_, err = doClientHandshake(c3, RsyncdServerVersion, "fake")
+	require.NoError(t, err)
+	line, err := c3.ReadLine()
+	require.NoError(t, err)
+	require.Contains(t, line, "Server queue is full")
+
+	require.Eventually(t, func() bool {
+		return srv.getUpstreamCounters("u1").queueFull.Load() == 1
+	}, time.Second, 10*time.Millisecond)
+
+	resp, err := testHTTPClient().Get("http://" + srv.HTTPListener.Addr().String() + "/metrics")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	text := string(body)
+	assert.Contains(t, text, "rsync_proxy_queue_full_rejected_total{upstream=\"u1\"} 1\n")
+
+	release.Done()
+}
+
+func TestMetricsCountsUnknownModule(t *testing.T) {
+	srv := startServer(t)
+	defer srv.Close()
+
+	srv.reloadLock.Lock()
+	srv.modules = map[string][]Target{}
+	srv.upstreamQueues = map[string]*queue.Queue{}
+	srv.upstreams = nil
+	srv.reloadLock.Unlock()
+
+	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	require.NoError(t, err)
+	conn := rsync.NewConn(rawConn)
+	defer conn.Close()
+
+	_, err = doClientHandshake(conn, RsyncdServerVersion, "does-not-exist")
+	require.NoError(t, err)
+	_, err = io.ReadAll(conn)
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		return srv.unknownModuleCount.Load() == 1
+	}, time.Second, 10*time.Millisecond)
+
+	resp, err := testHTTPClient().Get("http://" + srv.HTTPListener.Addr().String() + "/metrics")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	text := string(body)
+	assert.Contains(t, text, "rsync_proxy_unknown_module_requests_total 1\n")
+}
+
+func TestMetricsIncludesGoRuntime(t *testing.T) {
+	srv := startServer(t)
+	defer srv.Close()
+
+	resp, err := testHTTPClient().Get("http://" + srv.HTTPListener.Addr().String() + "/metrics")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	text := string(body)
+
+	// promhttp's default gatherer exposes Go runtime and process metrics.
+	assert.Contains(t, text, "go_goroutines")
+	assert.Contains(t, text, "go_gc_duration_seconds")
+	// Our legacy text-format metrics should still be present after the
+	// promhttp output (no "# EOF" terminator from OpenMetrics).
+	assert.Contains(t, text, "rsync_proxy_active_connections")
 }
 
 func TestPrometheusConnectionGroupingUsesStructuredKey(t *testing.T) {
