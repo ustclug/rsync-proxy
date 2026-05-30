@@ -22,11 +22,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/ustclug/rsync-proxy/pkg/logging"
-	"github.com/ustclug/rsync-proxy/pkg/queue"
-
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/ustclug/rsync-proxy/pkg/logging"
+	"github.com/ustclug/rsync-proxy/pkg/queue"
 )
 
 const (
