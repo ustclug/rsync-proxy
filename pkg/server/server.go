@@ -127,6 +127,21 @@ type upstreamCounters struct {
 	dialError atomic.Uint64
 }
 
+// moduleUpstreamKey identifies a (module, upstream) pair for per-module
+// lifetime counters.
+type moduleUpstreamKey struct {
+	module   string
+	upstream string
+}
+
+// moduleCounters holds per-(module, upstream) lifetime counters that are
+// updated when a relay finishes successfully.
+type moduleCounters struct {
+	completed atomic.Uint64
+	sentBytes atomic.Uint64
+	recvBytes atomic.Uint64
+}
+
 type Server struct {
 	// --- Options section
 	// Listen Address
@@ -165,6 +180,11 @@ type Server struct {
 	// map key is upstream name. Value is *upstreamCounters.
 	upstreamCounters   sync.Map
 	unknownModuleCount atomic.Uint64
+
+	// Per-(module, upstream) counters tracked when a relay finishes
+	// successfully. Lazy-initialized via getModuleCounters.
+	// map key is moduleUpstreamKey. Value is *moduleCounters.
+	moduleCounters sync.Map
 
 	TCPListener  net.Listener
 	TLSListener  net.Listener
@@ -344,6 +364,17 @@ func (s *Server) getUpstreamCounters(name string) *upstreamCounters {
 	}
 	v, _ := s.upstreamCounters.LoadOrStore(name, &upstreamCounters{})
 	return v.(*upstreamCounters)
+}
+
+// getModuleCounters returns the per-(module, upstream) counters, creating
+// them lazily on first reference. Safe for concurrent use.
+func (s *Server) getModuleCounters(module, upstream string) *moduleCounters {
+	key := moduleUpstreamKey{module: module, upstream: upstream}
+	if v, ok := s.moduleCounters.Load(key); ok {
+		return v.(*moduleCounters)
+	}
+	v, _ := s.moduleCounters.LoadOrStore(key, &moduleCounters{})
+	return v.(*moduleCounters)
 }
 
 func buildModuleTargets(upstreams []upstreamConfig) map[string][]Target {
@@ -743,6 +774,11 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	s.completedConnCount.Add(1)
 	s.sentBytesTotal.Add(uint64(sentBytes))
 	s.recvBytesTotal.Add(uint64(receivedBytes))
+
+	mc := s.getModuleCounters(moduleName, target.Upstream)
+	mc.completed.Add(1)
+	mc.sentBytes.Add(uint64(sentBytes))
+	mc.recvBytes.Add(uint64(receivedBytes))
 
 	duration := time.Since(info.ConnectedAt)
 	s.accessLog.F("client %s finishes module %s (sent: %d, received: %d, duration: %s)", ip, moduleName, sentBytes, receivedBytes, duration)

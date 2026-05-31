@@ -181,4 +181,58 @@ func (s *Server) writePrometheusMetrics(w io.Writer, now time.Time) {
 	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_received_bytes_total Total bytes received from clients since start.")
 	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_received_bytes_total counter")
 	_, _ = fmt.Fprintf(w, "rsync_proxy_received_bytes_total %d\n", s.recvBytesTotal.Load())
+
+	// Per-(module, upstream) lifetime counters. We collect a sorted slice of
+	// keys so that the text output is stable across scrapes.
+	type moduleStat struct {
+		key       moduleUpstreamKey
+		completed uint64
+		sentBytes uint64
+		recvBytes uint64
+	}
+	var moduleStats []moduleStat
+	s.moduleCounters.Range(func(k, v any) bool {
+		key := k.(moduleUpstreamKey)
+		c := v.(*moduleCounters)
+		moduleStats = append(moduleStats, moduleStat{
+			key:       key,
+			completed: c.completed.Load(),
+			sentBytes: c.sentBytes.Load(),
+			recvBytes: c.recvBytes.Load(),
+		})
+		return true
+	})
+	sort.Slice(moduleStats, func(i, j int) bool {
+		if moduleStats[i].key.module != moduleStats[j].key.module {
+			return moduleStats[i].key.module < moduleStats[j].key.module
+		}
+		return moduleStats[i].key.upstream < moduleStats[j].key.upstream
+	})
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_module_completed_connections_total Total completed connections by module and upstream.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_module_completed_connections_total counter")
+	for _, m := range moduleStats {
+		_, _ = fmt.Fprintf(w, "rsync_proxy_module_completed_connections_total{module=\"%s\",upstream=\"%s\"} %d\n",
+			prometheusEscapeLabelValue(prometheusLabelValueOrUnknown(m.key.module)),
+			prometheusEscapeLabelValue(prometheusLabelValueOrUnknown(m.key.upstream)),
+			m.completed)
+	}
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_module_sent_bytes_total Total bytes sent to clients by module and upstream.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_module_sent_bytes_total counter")
+	for _, m := range moduleStats {
+		_, _ = fmt.Fprintf(w, "rsync_proxy_module_sent_bytes_total{module=\"%s\",upstream=\"%s\"} %d\n",
+			prometheusEscapeLabelValue(prometheusLabelValueOrUnknown(m.key.module)),
+			prometheusEscapeLabelValue(prometheusLabelValueOrUnknown(m.key.upstream)),
+			m.sentBytes)
+	}
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_module_received_bytes_total Total bytes received from clients by module and upstream.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_module_received_bytes_total counter")
+	for _, m := range moduleStats {
+		_, _ = fmt.Fprintf(w, "rsync_proxy_module_received_bytes_total{module=\"%s\",upstream=\"%s\"} %d\n",
+			prometheusEscapeLabelValue(prometheusLabelValueOrUnknown(m.key.module)),
+			prometheusEscapeLabelValue(prometheusLabelValueOrUnknown(m.key.upstream)),
+			m.recvBytes)
+	}
 }

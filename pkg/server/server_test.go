@@ -742,6 +742,17 @@ func TestMetricsIncludesLifetimeCounters(t *testing.T) {
 	assert.Contains(t, text, fmt.Sprintf("rsync_proxy_sent_bytes_total %d\n", len(payload)))
 	assert.Contains(t, text, "# HELP rsync_proxy_received_bytes_total")
 	assert.Contains(t, text, "# TYPE rsync_proxy_received_bytes_total counter")
+
+	// Per-(module, upstream) lifetime counters.
+	assert.Contains(t, text, "# HELP rsync_proxy_module_completed_connections_total")
+	assert.Contains(t, text, "# TYPE rsync_proxy_module_completed_connections_total counter")
+	assert.Contains(t, text, "rsync_proxy_module_completed_connections_total{module=\"fake\",upstream=\"u1\"} 1\n")
+	assert.Contains(t, text, "# HELP rsync_proxy_module_sent_bytes_total")
+	assert.Contains(t, text, "# TYPE rsync_proxy_module_sent_bytes_total counter")
+	assert.Contains(t, text, fmt.Sprintf("rsync_proxy_module_sent_bytes_total{module=\"fake\",upstream=\"u1\"} %d\n", len(payload)))
+	assert.Contains(t, text, "# HELP rsync_proxy_module_received_bytes_total")
+	assert.Contains(t, text, "# TYPE rsync_proxy_module_received_bytes_total counter")
+	assert.Contains(t, text, "rsync_proxy_module_received_bytes_total{module=\"fake\",upstream=\"u1\"} 0\n")
 }
 
 func TestPrometheusLabelValueEscaping(t *testing.T) {
