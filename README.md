@@ -63,9 +63,53 @@ cp fail2ban/filter.d/* /etc/fail2ban/filter.d/
 
 # 配置
 
-除了基本的监听地址、TLS、access/error log 等，rsync-proxy 还提供了一组连接保护与限流相关的配置项，全部默认关闭、可以按需启用，包括：relay 阶段的 idle 超时与最大持续时长、TCP keepalive 周期、单 IP 对单上游的并发连接数上限、上游拨号超时、relay 阶段的吞吐率下限（带 grace 期，避免误伤大 module 的 file-list 阶段）。各上游还可以独立配置最大并发与排队上限，并支持 PROXY protocol。
+配置文件采用 TOML 格式，分为两段：`[proxy]` 段是 rsync-proxy 自身的设置，`[upstreams.<NAME>]` 段为每个上游 rsync daemon 一项。完整示例见 [`assets/config.example.toml`](assets/config.example.toml)。
 
-完整字段含义、推荐起点值与公共 mirror 的取值依据，见 [`assets/config.example.toml`](assets/config.example.toml)。
+## `[proxy]` 基础
+
+| 字段 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `listen` | string | — | 明文 rsync 监听地址，如 `"0.0.0.0:873"`。 |
+| `listen_tls` | string | — | TLS rsync 监听地址，可选。设置后会与 `listen` 共存。 |
+| `listen_http` | string | — | 控制面 HTTP 监听地址，可为 `host:port` 或 unix socket 路径。`/metrics`（Prometheus）、`/reload`、`/status` 由此暴露。 |
+| `tls_cert_file` | string | — | TLS 证书文件，配 `listen_tls` 使用。reload 时自动重读。 |
+| `tls_key_file` | string | — | TLS 私钥文件。reload 时自动重读。 |
+| `access_log` | string | stdout | 访问日志路径。 |
+| `error_log` | string | stderr | 错误日志路径。 |
+| `motd` | string | 空 | 客户端连接成功后展示的一行欢迎信息。 |
+
+注：`listen`、`listen_tls`、`listen_http` 在 reload 时不会更新，需重启进程。
+
+## `[proxy]` 连接保护与限流
+
+下列字段全部默认为 `0`（关闭），按需启用。完整含义、推荐起点值与取舍在 [`assets/config.example.toml`](assets/config.example.toml) 中有详细注释。
+
+| 字段 | 类型 | 默认 | 含义 | 公共 mirror 推荐起点 |
+| --- | --- | --- | --- | --- |
+| `relay_idle_timeout` | int 秒 | 0 | relay 阶段双向无 I/O 多久后关闭连接。语义同 rsyncd `timeout`。 | `600` |
+| `relay_max_duration` | int 秒 | 0 | relay 阶段总时长上限。超时关闭，rsync 客户端通常会重连续传。 | `14400`（4h） |
+| `tcp_keepalive` | int 秒 | 0 | 客户端连接和上游连接的 TCP keepalive 周期，0 沿用 OS 默认（通常 ~2h）。 | `120` |
+| `per_ip_max_active_connections` | int | 0 | 单 IP 对单上游最多并发 relay 连接数，proxy-wide 默认值。NAT/校园出口 IP 时取值需放宽。 | `4` |
+| `dial_timeout` | int 秒 | 0 | 拨号上游的超时；0 沿用内核 SYN 重试（~75s）。 | `5`（LAN） |
+| `min_throughput_bytes` | int64 字节 | 0 | relay 阶段最近 `min_throughput_window` 秒内累计收发须 ≥ 此值，否则视作慢速吸血并关闭。0 关闭整组检查。 | `1048576` |
+| `min_throughput_window` | int 秒 | 60 | 上述滑动窗口长度。 | `60` |
+| `min_throughput_grace` | int 秒 | = window | 连接刚开始的豁免期，避免误杀大 module 的 file-list 阶段。 | `600` |
+
+各项触发的事件都有对应的 Prometheus counter（`rsync_proxy_relay_idle_timeout_terminated_total`、`rsync_proxy_relay_max_duration_terminated_total`、`rsync_proxy_throughput_floor_terminated_total`、`rsync_proxy_per_ip_rejected_total`、`rsync_proxy_upstream_dial_errors_total`），便于先观察再调参。
+
+## `[upstreams.<NAME>]`
+
+每个上游一项，名字（`NAME`）任意，仅用于日志与 metric 标签。
+
+| 字段 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `address` | string | — | 上游地址，可为 `host:port` 或 unix socket 路径（如 `/run/rsyncd.sock`，需上游通过 xinetd 或 `systemd.socket Accept=yes` 暴露）。 |
+| `modules` | []string | — | 该上游提供的 module 列表。多个上游声明相同 module 时按客户端 IP 做负载均衡。 |
+| `discover_modules` | bool | false | 启动/reload 时自动从上游拉 module 列表。上游不可达会导致启动失败。与 `modules` 二选一。 |
+| `use_proxy_protocol` | bool | false | 与上游通信时附加 PROXY protocol 头，便于上游记录真实客户端 IP。需上游 rsyncd 启用 PROXY protocol 支持。 |
+| `max_active_connections` | int | 0 | 该上游最大并发 relay 连接数，0 表示不限制。 |
+| `max_queued_connections` | int | 0 | 达到上限后排队的最大长度，0 表示不排队。 |
+| `per_ip_max_active_connections` | int | 0 | 覆盖 `[proxy]` 中的同名值；0 表示继承 proxy-wide 默认。 |
 
 # 监控
 
