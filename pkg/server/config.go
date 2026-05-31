@@ -15,6 +15,11 @@ type Upstream struct {
 	UseProxyProtocol bool     `toml:"use_proxy_protocol"`
 	MaxActiveConns   int      `toml:"max_active_connections"`
 	MaxQueuedConns   int      `toml:"max_queued_connections"`
+	// PerIPMaxActiveConns overrides the proxy-wide
+	// per_ip_max_active_connections setting for this upstream. A
+	// value of 0 (the default, i.e. field omitted) means the
+	// upstream inherits the proxy-wide value.
+	PerIPMaxActiveConns int `toml:"per_ip_max_active_connections"`
 }
 
 type ProxySettings struct {
@@ -35,6 +40,24 @@ type ProxySettings struct {
 	// rsyncd.conf(5)), which is an I/O timeout. A common choice for
 	// public mirrors is 600.
 	RelayIdleTimeoutSecs int `toml:"relay_idle_timeout"`
+	// RelayMaxDurationSecs is the maximum total wall-clock duration
+	// (in seconds) of the bidirectional relay phase. When exceeded
+	// the proxy closes the connection regardless of activity. 0 (the
+	// default) disables this hard cap. rsync clients will typically
+	// reconnect and resume on the next run.
+	RelayMaxDurationSecs int `toml:"relay_max_duration"`
+	// TCPKeepAliveSecs enables TCP keepalive on accepted client
+	// connections and on dialed upstream connections. The value is
+	// the keepalive period in seconds; 0 (the default) leaves the
+	// OS-default keepalive behavior in place (typically: disabled or
+	// ~2 hours). Enabling this helps detect half-open connections
+	// (peer crashed, NAT reaped) within minutes rather than hours.
+	TCPKeepAliveSecs int `toml:"tcp_keepalive"`
+	// PerIPMaxActiveConns is the proxy-wide default for the per-IP
+	// per-upstream concurrency cap applied during the relay phase.
+	// 0 (the default) disables the limit. Each upstream may
+	// override this via [upstreams.X].per_ip_max_active_connections.
+	PerIPMaxActiveConns int `toml:"per_ip_max_active_connections"`
 }
 
 type Config struct {

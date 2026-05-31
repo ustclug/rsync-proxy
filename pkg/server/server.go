@@ -119,12 +119,26 @@ type upstreamConfig struct {
 	DiscoverModules bool
 	MaxActiveConns  int
 	MaxQueuedConns  int
+	// PerIPMaxActiveConns is the resolved (effective) limit on the
+	// number of concurrent active relay connections from a single
+	// client IP to this upstream. 0 means no per-IP cap. Computed at
+	// load time as: per-upstream override (Upstream.PerIPMaxActiveConns)
+	// or, if zero, the proxy-wide default (Proxy.PerIPMaxActiveConns).
+	PerIPMaxActiveConns int
 }
 
 // upstreamCounters holds per-upstream failure counters.
 type upstreamCounters struct {
-	queueFull atomic.Uint64
-	dialError atomic.Uint64
+	queueFull     atomic.Uint64
+	dialError     atomic.Uint64
+	perIPRejected atomic.Uint64
+}
+
+// perIPCountKey identifies a (upstream, client IP) pair for tracking
+// per-IP per-upstream concurrent active relay connections.
+type perIPCountKey struct {
+	upstream string
+	ip       string
 }
 
 // moduleUpstreamKey identifies a (module, upstream) pair for per-module
@@ -160,6 +174,18 @@ type Server struct {
 	// rsyncd.conf(5).
 	RelayIdleTimeout time.Duration
 
+	// RelayMaxDuration is a hard cap on the total wall-clock
+	// duration of the bidirectional relay phase of a connection.
+	// When exceeded the proxy closes both directions regardless of
+	// activity. 0 (the default) disables the cap.
+	RelayMaxDuration time.Duration
+
+	// TCPKeepAlive is the keepalive period applied to accepted
+	// client connections and to dialed upstream connections. 0 (the
+	// default) leaves the OS-default keepalive behavior in place
+	// (typically: disabled, or ~2 hours).
+	TCPKeepAlive time.Duration
+
 	Motd string
 	// --- End of options section
 
@@ -192,6 +218,11 @@ type Server struct {
 	// successfully. Lazy-initialized via getModuleCounters.
 	// map key is moduleUpstreamKey. Value is *moduleCounters.
 	moduleCounters sync.Map
+
+	// Per-(upstream, client IP) active-connection counters.
+	// Lazy-initialized via getPerIPCounter.
+	// map key is perIPCountKey. Value is *atomic.Int64.
+	perIPCounts sync.Map
 
 	TCPListener  net.Listener
 	TLSListener  net.Listener
@@ -261,6 +292,16 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 		tlsCertificate = &cert
 	}
 
+	if c.Proxy.RelayMaxDurationSecs < 0 {
+		return fmt.Errorf("relay_max_duration must be non-negative, got %d", c.Proxy.RelayMaxDurationSecs)
+	}
+	if c.Proxy.TCPKeepAliveSecs < 0 {
+		return fmt.Errorf("tcp_keepalive must be non-negative, got %d", c.Proxy.TCPKeepAliveSecs)
+	}
+	if c.Proxy.PerIPMaxActiveConns < 0 {
+		return fmt.Errorf("per_ip_max_active_connections must be non-negative, got %d", c.Proxy.PerIPMaxActiveConns)
+	}
+
 	upstreams := make([]upstreamConfig, 0, len(c.Upstreams))
 	upstreamNames := make([]string, 0, len(c.Upstreams))
 	for upstreamName := range c.Upstreams {
@@ -272,17 +313,27 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 		if len(v.Modules) == 0 && !v.DiscoverModules {
 			return fmt.Errorf("upstream=%s must set modules or discover_modules", upstreamName)
 		}
+		if v.PerIPMaxActiveConns < 0 {
+			return fmt.Errorf("upstream=%s: per_ip_max_active_connections must be non-negative, got %d", upstreamName, v.PerIPMaxActiveConns)
+		}
 		addr := v.Address
 		if err := validateTCPOrUnixAddr(addr); err != nil {
 			return fmt.Errorf("resolve address: %w, upstream=%s, address=%s", err, upstreamName, addr)
 		}
+		// Resolve effective per-IP cap: per-upstream override wins;
+		// fall back to proxy-wide default; 0 means no cap.
+		effectivePerIP := v.PerIPMaxActiveConns
+		if effectivePerIP == 0 {
+			effectivePerIP = c.Proxy.PerIPMaxActiveConns
+		}
 		upstreams = append(upstreams, upstreamConfig{
-			Name:            upstreamName,
-			Target:          Target{Upstream: upstreamName, Addr: addr, UseProxyProtocol: v.UseProxyProtocol},
-			Modules:         slices.Clone(v.Modules),
-			DiscoverModules: v.DiscoverModules,
-			MaxActiveConns:  v.MaxActiveConns,
-			MaxQueuedConns:  v.MaxQueuedConns,
+			Name:                upstreamName,
+			Target:              Target{Upstream: upstreamName, Addr: addr, UseProxyProtocol: v.UseProxyProtocol},
+			Modules:             slices.Clone(v.Modules),
+			DiscoverModules:     v.DiscoverModules,
+			MaxActiveConns:      v.MaxActiveConns,
+			MaxQueuedConns:      v.MaxQueuedConns,
+			PerIPMaxActiveConns: effectivePerIP,
 		})
 	}
 
@@ -321,6 +372,12 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 		return fmt.Errorf("relay_idle_timeout must be non-negative, got %d", c.Proxy.RelayIdleTimeoutSecs)
 	}
 	s.RelayIdleTimeout = time.Duration(c.Proxy.RelayIdleTimeoutSecs) * time.Second
+	s.RelayMaxDuration = time.Duration(c.Proxy.RelayMaxDurationSecs) * time.Second
+	s.TCPKeepAlive = time.Duration(c.Proxy.TCPKeepAliveSecs) * time.Second
+	// Reflect the new keepalive setting on the dialer used to dial
+	// upstreams. The dialer is consulted under reloadLock via
+	// getDialer() to avoid racing with reloads.
+	s.dialer.KeepAlive = s.TCPKeepAlive
 	s.modules = modules
 	s.upstreams = resolvedUpstreams
 	s.upstreamQueues = s.updateUpstreamQueuesLocked(resolvedUpstreams)
@@ -336,12 +393,13 @@ func resolveUpstreams(upstreams []upstreamConfig, discovered map[string][]string
 			modules = slices.Clone(discovered[upstream.Name])
 		}
 		resolved = append(resolved, upstreamConfig{
-			Name:            upstream.Name,
-			Target:          upstream.Target,
-			Modules:         modules,
-			DiscoverModules: upstream.DiscoverModules,
-			MaxActiveConns:  upstream.MaxActiveConns,
-			MaxQueuedConns:  upstream.MaxQueuedConns,
+			Name:                upstream.Name,
+			Target:              upstream.Target,
+			Modules:             modules,
+			DiscoverModules:     upstream.DiscoverModules,
+			MaxActiveConns:      upstream.MaxActiveConns,
+			MaxQueuedConns:      upstream.MaxQueuedConns,
+			PerIPMaxActiveConns: upstream.PerIPMaxActiveConns,
 		})
 	}
 	return resolved
@@ -403,6 +461,73 @@ func (s *Server) getModuleCounters(module, upstream string) *moduleCounters {
 	}
 	v, _ := s.moduleCounters.LoadOrStore(key, &moduleCounters{})
 	return v.(*moduleCounters)
+}
+
+// getPerIPCounter returns the (upstream, ip) active-connection counter,
+// creating it lazily. Safe for concurrent use.
+func (s *Server) getPerIPCounter(upstream, ip string) *atomic.Int64 {
+	key := perIPCountKey{upstream: upstream, ip: ip}
+	if v, ok := s.perIPCounts.Load(key); ok {
+		return v.(*atomic.Int64)
+	}
+	v, _ := s.perIPCounts.LoadOrStore(key, &atomic.Int64{})
+	return v.(*atomic.Int64)
+}
+
+// getDialer returns a copy of the current upstream dialer, taking the
+// reload lock to avoid racing with config reloads that mutate the
+// dialer (e.g. KeepAlive). The returned value is safe to pass by value
+// to dialContextTCPOrUnix.
+func (s *Server) getDialer() net.Dialer {
+	s.reloadLock.RLock()
+	defer s.reloadLock.RUnlock()
+	return s.dialer
+}
+
+// getRelayTimings returns a snapshot of the relay-phase timing
+// settings under the reload lock. These fields are mutated by config
+// reloads, so callers must not read them directly.
+func (s *Server) getRelayTimings() (idle, maxDuration, tcpKeepAlive time.Duration) {
+	s.reloadLock.RLock()
+	defer s.reloadLock.RUnlock()
+	return s.RelayIdleTimeout, s.RelayMaxDuration, s.TCPKeepAlive
+}
+
+// getTCPKeepAlive returns the configured TCP keepalive period under
+// the reload lock.
+func (s *Server) getTCPKeepAlive() time.Duration {
+	s.reloadLock.RLock()
+	defer s.reloadLock.RUnlock()
+	return s.TCPKeepAlive
+}
+
+// getPerIPLimitForUpstream returns the configured per-IP active
+// connection cap for the named upstream, or 0 if none is set or the
+// upstream is unknown. Safe for concurrent use.
+func (s *Server) getPerIPLimitForUpstream(name string) int {
+	s.reloadLock.RLock()
+	defer s.reloadLock.RUnlock()
+	for i := range s.upstreams {
+		if s.upstreams[i].Name == name {
+			return s.upstreams[i].PerIPMaxActiveConns
+		}
+	}
+	return 0
+}
+
+// applyTCPKeepAlive enables TCP keepalive on the given connection if
+// it is a *net.TCPConn and a positive period is provided. Other
+// connection types (e.g. unix sockets) are silently ignored.
+func applyTCPKeepAlive(conn net.Conn, period time.Duration) {
+	if period <= 0 {
+		return
+	}
+	tc, ok := conn.(*net.TCPConn)
+	if !ok {
+		return
+	}
+	_ = tc.SetKeepAlive(true)
+	_ = tc.SetKeepAlivePeriod(period)
 }
 
 func buildModuleTargets(upstreams []upstreamConfig) map[string][]Target {
@@ -672,6 +797,23 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 		return fmt.Errorf("no queue configured for upstream %s", target.Upstream)
 	}
 
+	// Per-IP per-upstream concurrency cap. A positive cap means the
+	// same client IP may not have more than N simultaneous active
+	// relay connections to this upstream. Counted before queue
+	// admission so the cap also bounds queueing, preventing a single
+	// IP from monopolizing both the active slots and the queue.
+	if perIPLimit := s.getPerIPLimitForUpstream(target.Upstream); perIPLimit > 0 {
+		counter := s.getPerIPCounter(target.Upstream, ip)
+		if n := counter.Add(1); int(n) > perIPLimit {
+			counter.Add(-1)
+			s.getUpstreamCounters(target.Upstream).perIPRejected.Add(1)
+			s.accessLog.F("client %s rejected for upstream %s module %s: per-IP cap of %d reached", ip, target.Upstream, moduleName, perIPLimit)
+			_, _ = writeWithTimeout(downConn, fmt.Appendf(nil, "@ERROR: per-IP connection limit of %d for upstream %s reached, retry later\n", perIPLimit, target.Upstream), writeTimeout)
+			return nil
+		}
+		defer counter.Add(-1)
+	}
+
 	handle := upstreamQueue.Acquire()
 	defer handle.Release()
 	status := <-handle.C
@@ -710,12 +852,19 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 		}
 	}
 
-	upConn, err := dialContextTCPOrUnix(ctx, s.dialer, upstreamAddr)
+	upConn, err := dialContextTCPOrUnix(ctx, s.getDialer(), upstreamAddr)
 	if err != nil {
 		s.getUpstreamCounters(target.Upstream).dialError.Add(1)
 		return fmt.Errorf("dial to upstream: %s: %w", upstreamAddr, err)
 	}
 	defer upConn.Close()
+	// Enable TCP keepalive on the upstream-side connection so that a
+	// dead/half-open peer is detected within the configured period
+	// rather than relying on the OS default (commonly ~2 hours, or
+	// disabled). dialer.KeepAlive only takes effect for the initial
+	// SYN window; explicitly setting it on the resulting *TCPConn
+	// is portable and idempotent.
+	applyTCPKeepAlive(upConn, s.getTCPKeepAlive())
 	upAddr := netAddrToString(upConn.RemoteAddr())
 	if useProxyProtocol {
 		err := writeProxyProtocolHeader(upConn, downConn.RemoteAddr(), upConn.RemoteAddr(), s.WriteTimeout)
@@ -764,27 +913,46 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	downReader := &countingReader{reader: downConn, counter: &info.ReceivedBytes}
 	upReader := &countingReader{reader: upConn, counter: &info.SentBytes}
 
-	// If an idle timeout is configured, share a single lastActivity
-	// timestamp between the two directions and start a watcher
-	// goroutine that tears the connections down when no data has
-	// flowed in either direction for the configured duration. This
-	// mirrors rsyncd's "timeout" semantics (rsyncd.conf(5)).
-	idleTimeout := s.RelayIdleTimeout
+	// Optional watchers on the bidirectional relay phase:
+	//   * RelayIdleTimeout terminates a connection that has had no
+	//     data flow in either direction for the configured duration
+	//     (rsyncd "timeout" semantics, rsyncd.conf(5)).
+	//   * RelayMaxDuration is a hard wall-clock cap on the entire
+	//     relay phase; any connection still alive past this point is
+	//     terminated regardless of activity.
+	// A single goroutine handles both checks. The shared
+	// idleTimedOut flag is used by the io.Copy goroutines to
+	// suppress the expected "use of closed network connection" error
+	// log when the watcher initiated the close.
+	idleTimeout, maxDuration, _ := s.getRelayTimings()
+	relayStartedAt := time.Now()
 	var idleTimedOut atomic.Bool
 	sentClosed := make(chan struct{})
 	receivedClosed := make(chan struct{})
 
-	if idleTimeout > 0 {
-		lastActivity := &atomic.Int64{}
-		lastActivity.Store(time.Now().UnixNano())
-		downReader.lastActivity = lastActivity
-		upReader.lastActivity = lastActivity
+	if idleTimeout > 0 || maxDuration > 0 {
+		var lastActivity *atomic.Int64
+		if idleTimeout > 0 {
+			lastActivity = &atomic.Int64{}
+			lastActivity.Store(relayStartedAt.UnixNano())
+			downReader.lastActivity = lastActivity
+			upReader.lastActivity = lastActivity
+		}
 
-		// Wake at most a few times per timeout window so a stalled
-		// connection is detected within roughly 1.25x the configured
-		// timeout in the worst case, while keeping wakeup overhead
-		// negligible.
-		interval := idleTimeout / 4
+		// Wake at most a few times per the smaller of the two
+		// configured windows so timeouts are detected within roughly
+		// 1.25x the configured value in the worst case, while keeping
+		// wakeup overhead negligible.
+		interval := time.Duration(0)
+		if idleTimeout > 0 {
+			interval = idleTimeout / 4
+		}
+		if maxDuration > 0 {
+			d := maxDuration / 4
+			if interval == 0 || d < interval {
+				interval = d
+			}
+		}
 		if interval < time.Second {
 			interval = time.Second
 		}
@@ -799,10 +967,19 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 				case <-receivedClosed:
 					return
 				case now := <-ticker.C:
-					last := time.Unix(0, lastActivity.Load())
-					if now.Sub(last) >= idleTimeout {
+					if idleTimeout > 0 {
+						last := time.Unix(0, lastActivity.Load())
+						if now.Sub(last) >= idleTimeout {
+							idleTimedOut.Store(true)
+							s.accessLog.F("client %s idle for module %s exceeds %s, closing", ip, moduleName, idleTimeout)
+							_ = upConn.Close()
+							_ = downConn.Close()
+							return
+						}
+					}
+					if maxDuration > 0 && now.Sub(relayStartedAt) >= maxDuration {
 						idleTimedOut.Store(true)
-						s.accessLog.F("client %s idle for module %s exceeds %s, closing", ip, moduleName, idleTimeout)
+						s.accessLog.F("client %s exceeded max relay duration %s for module %s, closing", ip, maxDuration, moduleName)
 						_ = upConn.Close()
 						_ = downConn.Close()
 						return
@@ -1049,6 +1226,12 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	defer s.activeConnCount.Add(-1)
 	s.acceptedConnCount.Add(1)
 	connIndex := s.connIndex.Add(1)
+
+	// Apply TCP keepalive on the accepted client connection so that
+	// half-open connections (peer crashed, NAT entry reaped) are
+	// detected within the configured period rather than waiting for
+	// the OS default. No-op on unix-domain or non-TCP listeners.
+	applyTCPKeepAlive(conn, s.getTCPKeepAlive())
 
 	defer func() {
 		err := recover()

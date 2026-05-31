@@ -97,6 +97,14 @@ func (s *Server) writePrometheusMetrics(w io.Writer, now time.Time) {
 			prometheusEscapeLabelValue(u.Name), c.dialError.Load())
 	}
 
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_per_ip_rejected_total Total connections rejected by the per-IP per-upstream concurrency cap.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_per_ip_rejected_total counter")
+	for _, u := range upstreams {
+		c := s.getUpstreamCounters(u.Name)
+		_, _ = fmt.Fprintf(w, "rsync_proxy_per_ip_rejected_total{upstream=\"%s\"} %d\n",
+			prometheusEscapeLabelValue(u.Name), c.perIPRejected.Load())
+	}
+
 	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_unknown_module_requests_total Total requests for unknown modules.")
 	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_unknown_module_requests_total counter")
 	_, _ = fmt.Fprintf(w, "rsync_proxy_unknown_module_requests_total %d\n", s.unknownModuleCount.Load())

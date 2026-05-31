@@ -18,11 +18,35 @@ motd = "Served by rsync-proxy (https://github.com/ustclug/rsync-proxy)"
 # rsyncd.conf(5); 600 is a common choice for public mirrors.
 #relay_idle_timeout = 0
 
+# Hard upper bound (seconds) on the total wall-clock duration of the
+# bidirectional relay phase. When exceeded the proxy closes the
+# connection regardless of activity. rsync clients typically resume
+# on reconnect. 0 (the default) disables this cap.
+#relay_max_duration = 0
+
+# TCP keepalive period (seconds) applied to accepted client
+# connections and dialed upstream connections. Helps detect
+# half-open connections (peer crashed, NAT entry reaped) within
+# minutes rather than the OS default (~2 hours). 0 (the default)
+# leaves the OS-default keepalive behavior in place.
+#tcp_keepalive = 0
+
+# Default per-IP per-upstream concurrent active connection cap.
+# Limits how many simultaneous active relay connections a single
+# client IP may have to any one upstream, preventing a single client
+# from monopolizing upstream slots. 0 (the default) disables the
+# limit. Each upstream may override this via its own
+# per_ip_max_active_connections setting below.
+#per_ip_max_active_connections = 0
+
 [upstreams.u1]
 address = "127.0.0.1:1234"
 modules = ["foo"]
 max_active_connections = 60
 max_queued_connections = 60
+# Override the proxy-wide per_ip_max_active_connections for this
+# upstream. 0 means inherit the proxy-wide default.
+#per_ip_max_active_connections = 4
 
 [upstreams.u1_auto]
 address = "127.0.0.1:1234"

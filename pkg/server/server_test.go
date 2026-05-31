@@ -1256,3 +1256,274 @@ func TestModuleCountersNormalizeEmptyKeyToUnknown(t *testing.T) {
 	// an empty-string label rendered separately.
 	assert.Equal(t, 1, strings.Count(text, "rsync_proxy_module_completed_connections_total{"))
 }
+// TestPerIPCapRejectsConnectionsBeyondLimit verifies that when a
+// per-IP active connection cap is configured for an upstream, a
+// second simultaneous connection from the same client IP to the same
+// upstream is rejected with an @ERROR message, the perIPRejected
+// counter is incremented, and the rejection is reflected in the
+// /metrics output.
+func TestPerIPCapRejectsConnectionsBeyondLimit(t *testing.T) {
+	srv := startServer(t)
+	defer srv.Close()
+	accessLogPath := setupAccessLog(t, srv)
+
+	var release sync.WaitGroup
+	release.Add(1)
+
+	upstream := rsync.NewServer(func(conn *rsync.Conn) {
+		defer conn.Close()
+		_, _, err := doServerHandshake(conn, RsyncdServerVersion)
+		require.NoError(t, err)
+		release.Wait()
+	})
+	upstream.Start()
+	defer upstream.Close()
+
+	srv.reloadLock.Lock()
+	srv.upstreams = []upstreamConfig{
+		{Name: "u1", PerIPMaxActiveConns: 1},
+	}
+	srv.modules = map[string][]Target{
+		"fake": {{Upstream: "u1", Addr: upstream.Listener.Addr().String()}},
+	}
+	srv.upstreamQueues = map[string]*queue.Queue{"u1": queue.New(0, 0)}
+	srv.reloadLock.Unlock()
+
+	// First connection occupies the per-IP slot.
+	c1Raw, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	require.NoError(t, err)
+	c1 := rsync.NewConn(c1Raw)
+	defer c1.Close()
+	_, err = doClientHandshake(c1, RsyncdServerVersion, "fake")
+	require.NoError(t, err)
+
+	// Second connection from the same IP must be rejected.
+	c2Raw, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	require.NoError(t, err)
+	c2 := rsync.NewConn(c2Raw)
+	defer c2.Close()
+	_, err = doClientHandshake(c2, RsyncdServerVersion, "fake")
+	require.NoError(t, err)
+
+	body, err := io.ReadAll(c2)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "@ERROR: per-IP connection limit")
+	assert.Contains(t, string(body), "for upstream u1")
+
+	require.Eventually(t, func() bool {
+		return srv.getUpstreamCounters("u1").perIPRejected.Load() == 1
+	}, time.Second, 10*time.Millisecond)
+
+	resp, err := testHTTPClient().Get("http://" + srv.HTTPListener.Addr().String() + "/metrics")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	metricsBody, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	text := string(metricsBody)
+	assert.Contains(t, text, "# HELP rsync_proxy_per_ip_rejected_total")
+	assert.Contains(t, text, "# TYPE rsync_proxy_per_ip_rejected_total counter")
+	assert.Contains(t, text, "rsync_proxy_per_ip_rejected_total{upstream=\"u1\"} 1\n")
+
+	logData, err := os.ReadFile(accessLogPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(logData), "per-IP cap of 1 reached")
+
+	release.Done()
+}
+
+// TestRelayMaxDurationClosesLongConnection verifies that when
+// RelayMaxDuration is configured, an otherwise-active relay (no idle
+// timeout) is forcibly torn down once it exceeds the configured
+// wall-clock cap.
+func TestRelayMaxDurationClosesLongConnection(t *testing.T) {
+	srv := startServer(t)
+	defer srv.Close()
+	srv.RelayIdleTimeout = 0
+	srv.RelayMaxDuration = 500 * time.Millisecond
+	accessLogPath := setupAccessLog(t, srv)
+
+	r := require.New(t)
+
+	upstreamReady := make(chan struct{})
+	upstreamDone := make(chan struct{})
+
+	fakeRsync := rsync.NewServer(func(conn *rsync.Conn) {
+		defer conn.Close()
+		defer close(upstreamDone)
+
+		_, _, err := doServerHandshake(conn, RsyncdServerVersion)
+		r.NoError(err, "upstream handshake")
+		close(upstreamReady)
+
+		// Stay quiet so the relay phase has no I/O. With idle timeout
+		// disabled, only the max-duration watcher can tear this
+		// connection down.
+		_, _ = io.ReadAll(conn)
+	})
+	fakeRsync.Start()
+	defer fakeRsync.Close()
+
+	srv.modules = map[string][]Target{
+		"fake": {{Upstream: "u1", Addr: fakeRsync.Listener.Addr().String()}},
+	}
+	srv.upstreamQueues = map[string]*queue.Queue{"u1": queue.New(0, 0)}
+
+	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	r.NoError(err)
+	conn := rsync.NewConn(rawConn)
+	defer conn.Close()
+
+	_, err = doClientHandshake(conn, RsyncdServerVersion, "fake")
+	r.NoError(err)
+
+	<-upstreamReady
+
+	start := time.Now()
+	_, err = io.ReadAll(conn)
+	r.NoError(err)
+	elapsed := time.Since(start)
+
+	r.GreaterOrEqual(elapsed, srv.RelayMaxDuration, "should have waited at least the max duration")
+	r.Less(elapsed, 5*time.Second, "should not block far beyond the max duration")
+
+	select {
+	case <-upstreamDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream connection was not closed after max duration")
+	}
+
+	logData, err := os.ReadFile(accessLogPath)
+	r.NoError(err)
+	assert.Contains(t, string(logData), "exceeded max relay duration")
+	assert.Contains(t, string(logData), "for module fake")
+}
+
+// TestApplyTCPKeepAliveOnTCPConn exercises the applyTCPKeepAlive
+// helper end-to-end on a real *net.TCPConn. We cannot portably read
+// SO_KEEPALIVE/TCP_KEEPIDLE back via the standard library, so we
+// verify that the helper does not error and is safe to invoke with
+// zero or negative periods.
+func TestApplyTCPKeepAliveOnTCPConn(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			accepted <- nil
+			return
+		}
+		accepted <- c
+	}()
+
+	clientConn, err := net.Dial("tcp", ln.Addr().String())
+	require.NoError(t, err)
+	defer clientConn.Close()
+
+	srvConn := <-accepted
+	require.NotNil(t, srvConn)
+	defer srvConn.Close()
+
+	// Should be a no-op for a zero/negative period.
+	applyTCPKeepAlive(srvConn, 0)
+	applyTCPKeepAlive(srvConn, -1*time.Second)
+
+	// Should successfully apply the keepalive on a real *net.TCPConn.
+	applyTCPKeepAlive(srvConn, 45*time.Second)
+	_, ok := srvConn.(*net.TCPConn)
+	assert.True(t, ok, "test sanity: accepted conn should be *net.TCPConn")
+}
+
+// TestLoadConfigPropagatesTCPKeepAliveToDialer verifies that the
+// tcp_keepalive proxy setting is parsed, validated, and propagated to
+// both the Server.TCPKeepAlive field and the underlying dialer used
+// for upstream connections.
+func TestLoadConfigPropagatesTCPKeepAliveToDialer(t *testing.T) {
+	configContent := `
+[proxy]
+listen = "127.0.0.1:0"
+listen_http = "127.0.0.1:0"
+tcp_keepalive = 45
+relay_max_duration = 7200
+per_ip_max_active_connections = 4
+
+[upstreams.u1]
+address = "127.0.0.1:8730"
+modules = ["m1"]
+`
+	srv := New()
+	require.NoError(t, srv.ReadConfig(strings.NewReader(configContent), false))
+
+	assert.Equal(t, 45*time.Second, srv.TCPKeepAlive)
+	assert.Equal(t, 45*time.Second, srv.dialer.KeepAlive)
+	assert.Equal(t, 2*time.Hour, srv.RelayMaxDuration)
+
+	srv.reloadLock.RLock()
+	defer srv.reloadLock.RUnlock()
+	require.Len(t, srv.upstreams, 1)
+	assert.Equal(t, 4, srv.upstreams[0].PerIPMaxActiveConns)
+}
+
+// TestLoadConfigRejectsNegativeTimings verifies that loadConfig
+// rejects negative values for the new connection-control settings.
+func TestLoadConfigRejectsNegativeTimings(t *testing.T) {
+	cases := []struct {
+		name    string
+		config  string
+		wantMsg string
+	}{
+		{
+			name: "relay_max_duration",
+			config: `
+[proxy]
+listen = "127.0.0.1:0"
+listen_http = "127.0.0.1:0"
+relay_max_duration = -1
+
+[upstreams.u1]
+address = "127.0.0.1:8730"
+modules = ["m1"]
+`,
+			wantMsg: "relay_max_duration must be non-negative",
+		},
+		{
+			name: "tcp_keepalive",
+			config: `
+[proxy]
+listen = "127.0.0.1:0"
+listen_http = "127.0.0.1:0"
+tcp_keepalive = -5
+
+[upstreams.u1]
+address = "127.0.0.1:8730"
+modules = ["m1"]
+`,
+			wantMsg: "tcp_keepalive must be non-negative",
+		},
+		{
+			name: "per_ip_max_active_connections",
+			config: `
+[proxy]
+listen = "127.0.0.1:0"
+listen_http = "127.0.0.1:0"
+per_ip_max_active_connections = -2
+
+[upstreams.u1]
+address = "127.0.0.1:8730"
+modules = ["m1"]
+`,
+			wantMsg: "per_ip_max_active_connections must be non-negative",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := New()
+			err := srv.ReadConfig(strings.NewReader(tc.config), false)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantMsg)
+		})
+	}
+}
