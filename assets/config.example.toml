@@ -39,6 +39,24 @@ motd = "Served by rsync-proxy (https://github.com/ustclug/rsync-proxy)"
 # per_ip_max_active_connections setting below.
 #per_ip_max_active_connections = 0
 
+# Connect timeout (seconds) when dialing upstreams. Bounds how long
+# the proxy waits for an unresponsive upstream before failing fast
+# and incrementing rsync_proxy_upstream_dial_errors_total. 0 (the
+# default) leaves the OS connect-attempt behavior in place
+# (typically ~75s of SYN retries on Linux).
+#dial_timeout = 0
+
+# Throughput floor enforced during the relay phase. A connection
+# that transfers fewer than min_throughput_bytes over the most
+# recent min_throughput_window seconds is treated as slow-leeching
+# and terminated. min_throughput_grace gives a fresh connection
+# this many seconds of ramp-up before the floor is enforced;
+# defaults to min_throughput_window when unset. Set
+# min_throughput_bytes to 0 (the default) to disable the check.
+#min_throughput_bytes = 0
+#min_throughput_window = 60
+#min_throughput_grace = 60
+
 [upstreams.u1]
 address = "127.0.0.1:1234"
 modules = ["foo"]

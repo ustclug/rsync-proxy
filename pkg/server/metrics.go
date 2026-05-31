@@ -105,6 +105,30 @@ func (s *Server) writePrometheusMetrics(w io.Writer, now time.Time) {
 			prometheusEscapeLabelValue(u.Name), c.perIPRejected.Load())
 	}
 
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_relay_idle_timeout_terminated_total Total relay connections terminated by the idle timeout watcher per upstream.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_relay_idle_timeout_terminated_total counter")
+	for _, u := range upstreams {
+		c := s.getUpstreamCounters(u.Name)
+		_, _ = fmt.Fprintf(w, "rsync_proxy_relay_idle_timeout_terminated_total{upstream=\"%s\"} %d\n",
+			prometheusEscapeLabelValue(u.Name), c.idleTerminated.Load())
+	}
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_relay_max_duration_terminated_total Total relay connections terminated for exceeding the max-duration cap per upstream.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_relay_max_duration_terminated_total counter")
+	for _, u := range upstreams {
+		c := s.getUpstreamCounters(u.Name)
+		_, _ = fmt.Fprintf(w, "rsync_proxy_relay_max_duration_terminated_total{upstream=\"%s\"} %d\n",
+			prometheusEscapeLabelValue(u.Name), c.maxDurationTerminated.Load())
+	}
+
+	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_throughput_floor_terminated_total Total relay connections terminated for falling below the configured throughput floor per upstream.")
+	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_throughput_floor_terminated_total counter")
+	for _, u := range upstreams {
+		c := s.getUpstreamCounters(u.Name)
+		_, _ = fmt.Fprintf(w, "rsync_proxy_throughput_floor_terminated_total{upstream=\"%s\"} %d\n",
+			prometheusEscapeLabelValue(u.Name), c.throughputFloorTerminated.Load())
+	}
+
 	_, _ = fmt.Fprintln(w, "# HELP rsync_proxy_unknown_module_requests_total Total requests for unknown modules.")
 	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_unknown_module_requests_total counter")
 	_, _ = fmt.Fprintf(w, "rsync_proxy_unknown_module_requests_total %d\n", s.unknownModuleCount.Load())

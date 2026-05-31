@@ -58,6 +58,28 @@ type ProxySettings struct {
 	// 0 (the default) disables the limit. Each upstream may
 	// override this via [upstreams.X].per_ip_max_active_connections.
 	PerIPMaxActiveConns int `toml:"per_ip_max_active_connections"`
+	// DialTimeoutSecs caps how long the proxy waits when dialing an
+	// upstream rsync server. A value of 0 (the default) leaves the
+	// OS-default TCP connect behavior in place (~75s on Linux). When
+	// an upstream is unreachable this surfaces a fast failure to
+	// the client and increments rsync_proxy_upstream_dial_errors_total
+	// without tying up the listener for the full kernel SYN-retry
+	// budget.
+	DialTimeoutSecs int `toml:"dial_timeout"`
+	// MinThroughputBytes, MinThroughputWindowSecs and
+	// MinThroughputGraceSecs together implement a throughput floor
+	// during the relay phase. Within any window of
+	// min_throughput_window seconds the connection must transfer at
+	// least min_throughput_bytes (counting both directions); if it
+	// does not, the proxy closes the connection. The grace period
+	// suppresses the check for the first min_throughput_grace seconds
+	// after the relay starts to avoid killing a slow-start session.
+	// Setting min_throughput_bytes or min_throughput_window to 0 (the
+	// default) disables the floor. min_throughput_grace defaults to
+	// the value of min_throughput_window when 0.
+	MinThroughputBytes      int64 `toml:"min_throughput_bytes"`
+	MinThroughputWindowSecs int   `toml:"min_throughput_window"`
+	MinThroughputGraceSecs  int   `toml:"min_throughput_grace"`
 }
 
 type Config struct {

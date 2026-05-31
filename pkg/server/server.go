@@ -129,9 +129,12 @@ type upstreamConfig struct {
 
 // upstreamCounters holds per-upstream failure counters.
 type upstreamCounters struct {
-	queueFull     atomic.Uint64
-	dialError     atomic.Uint64
-	perIPRejected atomic.Uint64
+	queueFull               atomic.Uint64
+	dialError               atomic.Uint64
+	perIPRejected           atomic.Uint64
+	idleTerminated          atomic.Uint64
+	maxDurationTerminated   atomic.Uint64
+	throughputFloorTerminated atomic.Uint64
 }
 
 // perIPCountKey identifies a (upstream, client IP) pair for tracking
@@ -185,6 +188,19 @@ type Server struct {
 	// default) leaves the OS-default keepalive behavior in place
 	// (typically: disabled, or ~2 hours).
 	TCPKeepAlive time.Duration
+
+	// MinThroughputBytes, MinThroughputWindow and
+	// MinThroughputGrace together implement a throughput floor
+	// during the relay phase. Within any window of
+	// MinThroughputWindow the connection must transfer at least
+	// MinThroughputBytes (counting both directions); otherwise the
+	// proxy closes the connection. The grace period suppresses the
+	// check for the first MinThroughputGrace after the relay
+	// starts. Setting MinThroughputBytes or MinThroughputWindow to
+	// zero disables the floor.
+	MinThroughputBytes  int64
+	MinThroughputWindow time.Duration
+	MinThroughputGrace  time.Duration
 
 	Motd string
 	// --- End of options section
@@ -301,6 +317,18 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 	if c.Proxy.PerIPMaxActiveConns < 0 {
 		return fmt.Errorf("per_ip_max_active_connections must be non-negative, got %d", c.Proxy.PerIPMaxActiveConns)
 	}
+	if c.Proxy.DialTimeoutSecs < 0 {
+		return fmt.Errorf("dial_timeout must be non-negative, got %d", c.Proxy.DialTimeoutSecs)
+	}
+	if c.Proxy.MinThroughputBytes < 0 {
+		return fmt.Errorf("min_throughput_bytes must be non-negative, got %d", c.Proxy.MinThroughputBytes)
+	}
+	if c.Proxy.MinThroughputWindowSecs < 0 {
+		return fmt.Errorf("min_throughput_window must be non-negative, got %d", c.Proxy.MinThroughputWindowSecs)
+	}
+	if c.Proxy.MinThroughputGraceSecs < 0 {
+		return fmt.Errorf("min_throughput_grace must be non-negative, got %d", c.Proxy.MinThroughputGraceSecs)
+	}
 
 	upstreams := make([]upstreamConfig, 0, len(c.Upstreams))
 	upstreamNames := make([]string, 0, len(c.Upstreams))
@@ -374,10 +402,21 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 	s.RelayIdleTimeout = time.Duration(c.Proxy.RelayIdleTimeoutSecs) * time.Second
 	s.RelayMaxDuration = time.Duration(c.Proxy.RelayMaxDurationSecs) * time.Second
 	s.TCPKeepAlive = time.Duration(c.Proxy.TCPKeepAliveSecs) * time.Second
-	// Reflect the new keepalive setting on the dialer used to dial
-	// upstreams. The dialer is consulted under reloadLock via
-	// getDialer() to avoid racing with reloads.
+	s.MinThroughputBytes = c.Proxy.MinThroughputBytes
+	s.MinThroughputWindow = time.Duration(c.Proxy.MinThroughputWindowSecs) * time.Second
+	graceSecs := c.Proxy.MinThroughputGraceSecs
+	if graceSecs == 0 {
+		// Default the grace period to the window itself: a fresh
+		// connection gets one full window to ramp up before the
+		// floor is enforced.
+		graceSecs = c.Proxy.MinThroughputWindowSecs
+	}
+	s.MinThroughputGrace = time.Duration(graceSecs) * time.Second
+	// Reflect the new keepalive and dial-timeout settings on the
+	// dialer used to dial upstreams. The dialer is consulted under
+	// reloadLock via getDialer() to avoid racing with reloads.
 	s.dialer.KeepAlive = s.TCPKeepAlive
+	s.dialer.Timeout = time.Duration(c.Proxy.DialTimeoutSecs) * time.Second
 	s.modules = modules
 	s.upstreams = resolvedUpstreams
 	s.upstreamQueues = s.updateUpstreamQueuesLocked(resolvedUpstreams)
@@ -484,13 +523,33 @@ func (s *Server) getDialer() net.Dialer {
 	return s.dialer
 }
 
+// relayTimings is a snapshot of all relay-phase timing settings,
+// captured atomically under the reload lock. Callers should consume
+// this snapshot for the lifetime of a single relay connection so the
+// behavior remains consistent across reloads.
+type relayTimings struct {
+	idle         time.Duration
+	maxDuration  time.Duration
+	tcpKeepAlive time.Duration
+	minBytes     int64
+	minWindow    time.Duration
+	minGrace     time.Duration
+}
+
 // getRelayTimings returns a snapshot of the relay-phase timing
 // settings under the reload lock. These fields are mutated by config
 // reloads, so callers must not read them directly.
-func (s *Server) getRelayTimings() (idle, maxDuration, tcpKeepAlive time.Duration) {
+func (s *Server) getRelayTimings() relayTimings {
 	s.reloadLock.RLock()
 	defer s.reloadLock.RUnlock()
-	return s.RelayIdleTimeout, s.RelayMaxDuration, s.TCPKeepAlive
+	return relayTimings{
+		idle:         s.RelayIdleTimeout,
+		maxDuration:  s.RelayMaxDuration,
+		tcpKeepAlive: s.TCPKeepAlive,
+		minBytes:     s.MinThroughputBytes,
+		minWindow:    s.MinThroughputWindow,
+		minGrace:     s.MinThroughputGrace,
+	}
 }
 
 // getTCPKeepAlive returns the configured TCP keepalive period under
@@ -920,17 +979,31 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	//   * RelayMaxDuration is a hard wall-clock cap on the entire
 	//     relay phase; any connection still alive past this point is
 	//     terminated regardless of activity.
-	// A single goroutine handles both checks. The shared
-	// idleTimedOut flag is used by the io.Copy goroutines to
+	//   * MinThroughputBytes/MinThroughputWindow enforce a minimum
+	//     average throughput on the relay; a connection that has
+	//     transferred fewer than minBytes over the last window is
+	//     considered to be slow-leeching and terminated. The grace
+	//     period suppresses the check during initial ramp-up so
+	//     short rsync exchanges (file lists, etc.) are not killed.
+	// A single goroutine handles all checks. The shared
+	// watcherClosed flag is used by the io.Copy goroutines to
 	// suppress the expected "use of closed network connection" error
-	// log when the watcher initiated the close.
-	idleTimeout, maxDuration, _ := s.getRelayTimings()
+	// log when the watcher initiated the close. The reason for the
+	// closure is recorded directly by the watcher into per-upstream
+	// counters and access log.
+	timings := s.getRelayTimings()
+	idleTimeout := timings.idle
+	maxDuration := timings.maxDuration
+	minBytes := timings.minBytes
+	minWindow := timings.minWindow
+	minGrace := timings.minGrace
+	throughputEnabled := minBytes > 0 && minWindow > 0
 	relayStartedAt := time.Now()
 	var idleTimedOut atomic.Bool
 	sentClosed := make(chan struct{})
 	receivedClosed := make(chan struct{})
 
-	if idleTimeout > 0 || maxDuration > 0 {
+	if idleTimeout > 0 || maxDuration > 0 || throughputEnabled {
 		var lastActivity *atomic.Int64
 		if idleTimeout > 0 {
 			lastActivity = &atomic.Int64{}
@@ -939,27 +1012,43 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 			upReader.lastActivity = lastActivity
 		}
 
-		// Wake at most a few times per the smaller of the two
+		// Wake at most a few times per the smallest of the
 		// configured windows so timeouts are detected within roughly
 		// 1.25x the configured value in the worst case, while keeping
 		// wakeup overhead negligible.
 		interval := time.Duration(0)
-		if idleTimeout > 0 {
-			interval = idleTimeout / 4
-		}
-		if maxDuration > 0 {
-			d := maxDuration / 4
+		bumpInterval := func(d time.Duration) {
+			if d <= 0 {
+				return
+			}
 			if interval == 0 || d < interval {
 				interval = d
 			}
+		}
+		if idleTimeout > 0 {
+			bumpInterval(idleTimeout / 4)
+		}
+		if maxDuration > 0 {
+			bumpInterval(maxDuration / 4)
+		}
+		if throughputEnabled {
+			bumpInterval(minWindow / 4)
 		}
 		if interval < time.Second {
 			interval = time.Second
 		}
 
+		upstreamName := target.Upstream
 		go func() {
 			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
+			// Sliding-window throughput state. lastSampleTime moves
+			// forward each time we reach a full window, with
+			// lastSampleBytes capturing the cumulative byte count at
+			// that moment. delta over the next window must meet
+			// minBytes or the connection is terminated.
+			lastSampleTime := relayStartedAt
+			lastSampleBytes := int64(0)
 			for {
 				select {
 				case <-sentClosed:
@@ -971,6 +1060,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 						last := time.Unix(0, lastActivity.Load())
 						if now.Sub(last) >= idleTimeout {
 							idleTimedOut.Store(true)
+							s.getUpstreamCounters(upstreamName).idleTerminated.Add(1)
 							s.accessLog.F("client %s idle for module %s exceeds %s, closing", ip, moduleName, idleTimeout)
 							_ = upConn.Close()
 							_ = downConn.Close()
@@ -979,10 +1069,26 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 					}
 					if maxDuration > 0 && now.Sub(relayStartedAt) >= maxDuration {
 						idleTimedOut.Store(true)
+						s.getUpstreamCounters(upstreamName).maxDurationTerminated.Add(1)
 						s.accessLog.F("client %s exceeded max relay duration %s for module %s, closing", ip, maxDuration, moduleName)
 						_ = upConn.Close()
 						_ = downConn.Close()
 						return
+					}
+					if throughputEnabled && now.Sub(relayStartedAt) >= minGrace && now.Sub(lastSampleTime) >= minWindow {
+						curBytes := info.SentBytes.Load() + info.ReceivedBytes.Load()
+						delta := curBytes - lastSampleBytes
+						if delta < minBytes {
+							idleTimedOut.Store(true)
+							s.getUpstreamCounters(upstreamName).throughputFloorTerminated.Add(1)
+							s.accessLog.F("client %s for module %s below throughput floor (%d bytes < %d bytes in %s), closing",
+								ip, moduleName, delta, minBytes, minWindow)
+							_ = upConn.Close()
+							_ = downConn.Close()
+							return
+						}
+						lastSampleTime = now
+						lastSampleBytes = curBytes
 					}
 				}
 			}

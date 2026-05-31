@@ -244,6 +244,7 @@ func TestRelayIdleTimeoutClosesIdleConnection(t *testing.T) {
 	srv.modules = map[string][]Target{
 		"fake": {{Upstream: "u1", Addr: fakeRsync.Listener.Addr().String()}},
 	}
+	srv.upstreams = []upstreamConfig{{Name: "u1"}}
 	srv.upstreamQueues = map[string]*queue.Queue{"u1": queue.New(0, 0)}
 
 	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())
@@ -277,6 +278,24 @@ func TestRelayIdleTimeoutClosesIdleConnection(t *testing.T) {
 	logData, err := os.ReadFile(accessLogPath)
 	r.NoError(err)
 	assert.Contains(t, string(logData), "idle for module fake exceeds")
+
+	// The watcher must record the termination reason on the
+	// per-upstream counter and surface it via /metrics so that
+	// operators can distinguish a hung-and-killed connection from a
+	// normal completion.
+	r.Eventually(func() bool {
+		return srv.getUpstreamCounters("u1").idleTerminated.Load() == 1
+	}, time.Second, 10*time.Millisecond)
+
+	resp, err := testHTTPClient().Get("http://" + srv.HTTPListener.Addr().String() + "/metrics")
+	r.NoError(err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	r.NoError(err)
+	text := string(body)
+	assert.Contains(t, text, "# HELP rsync_proxy_relay_idle_timeout_terminated_total")
+	assert.Contains(t, text, "# TYPE rsync_proxy_relay_idle_timeout_terminated_total counter")
+	assert.Contains(t, text, "rsync_proxy_relay_idle_timeout_terminated_total{upstream=\"u1\"} 1\n")
 }
 
 // TestRelayIdleTimeoutNotTriggeredWhenActive verifies that the idle
@@ -1366,6 +1385,7 @@ func TestRelayMaxDurationClosesLongConnection(t *testing.T) {
 	srv.modules = map[string][]Target{
 		"fake": {{Upstream: "u1", Addr: fakeRsync.Listener.Addr().String()}},
 	}
+	srv.upstreams = []upstreamConfig{{Name: "u1"}}
 	srv.upstreamQueues = map[string]*queue.Queue{"u1": queue.New(0, 0)}
 
 	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())
@@ -1396,6 +1416,20 @@ func TestRelayMaxDurationClosesLongConnection(t *testing.T) {
 	r.NoError(err)
 	assert.Contains(t, string(logData), "exceeded max relay duration")
 	assert.Contains(t, string(logData), "for module fake")
+
+	r.Eventually(func() bool {
+		return srv.getUpstreamCounters("u1").maxDurationTerminated.Load() == 1
+	}, time.Second, 10*time.Millisecond)
+
+	resp, err := testHTTPClient().Get("http://" + srv.HTTPListener.Addr().String() + "/metrics")
+	r.NoError(err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	r.NoError(err)
+	text := string(body)
+	assert.Contains(t, text, "# HELP rsync_proxy_relay_max_duration_terminated_total")
+	assert.Contains(t, text, "# TYPE rsync_proxy_relay_max_duration_terminated_total counter")
+	assert.Contains(t, text, "rsync_proxy_relay_max_duration_terminated_total{upstream=\"u1\"} 1\n")
 }
 
 // TestApplyTCPKeepAliveOnTCPConn exercises the applyTCPKeepAlive
@@ -1516,6 +1550,62 @@ modules = ["m1"]
 `,
 			wantMsg: "per_ip_max_active_connections must be non-negative",
 		},
+		{
+			name: "dial_timeout",
+			config: `
+[proxy]
+listen = "127.0.0.1:0"
+listen_http = "127.0.0.1:0"
+dial_timeout = -1
+
+[upstreams.u1]
+address = "127.0.0.1:8730"
+modules = ["m1"]
+`,
+			wantMsg: "dial_timeout must be non-negative",
+		},
+		{
+			name: "min_throughput_bytes",
+			config: `
+[proxy]
+listen = "127.0.0.1:0"
+listen_http = "127.0.0.1:0"
+min_throughput_bytes = -1
+
+[upstreams.u1]
+address = "127.0.0.1:8730"
+modules = ["m1"]
+`,
+			wantMsg: "min_throughput_bytes must be non-negative",
+		},
+		{
+			name: "min_throughput_window",
+			config: `
+[proxy]
+listen = "127.0.0.1:0"
+listen_http = "127.0.0.1:0"
+min_throughput_window = -1
+
+[upstreams.u1]
+address = "127.0.0.1:8730"
+modules = ["m1"]
+`,
+			wantMsg: "min_throughput_window must be non-negative",
+		},
+		{
+			name: "min_throughput_grace",
+			config: `
+[proxy]
+listen = "127.0.0.1:0"
+listen_http = "127.0.0.1:0"
+min_throughput_grace = -1
+
+[upstreams.u1]
+address = "127.0.0.1:8730"
+modules = ["m1"]
+`,
+			wantMsg: "min_throughput_grace must be non-negative",
+		},
 	}
 
 	for _, tc := range cases {
@@ -1526,4 +1616,144 @@ modules = ["m1"]
 			assert.Contains(t, err.Error(), tc.wantMsg)
 		})
 	}
+}
+
+// TestThroughputFloorTerminatesSlowConnection verifies that when a
+// throughput floor is configured, an otherwise-active relay (no idle
+// timeout, no max-duration) which transfers fewer than MinThroughputBytes
+// per MinThroughputWindow is forcibly torn down once the grace period
+// elapses, the per-upstream counter is incremented, and the rejection
+// is reflected in /metrics and the access log.
+func TestThroughputFloorTerminatesSlowConnection(t *testing.T) {
+	srv := startServer(t)
+	defer srv.Close()
+	srv.RelayIdleTimeout = 0
+	srv.RelayMaxDuration = 0
+	// Demand effectively infeasible throughput in a 200ms window so
+	// the floor always trips. Grace = 0 so the very first sample
+	// after the window elapses is enough.
+	srv.MinThroughputBytes = 1 << 30
+	srv.MinThroughputWindow = 200 * time.Millisecond
+	srv.MinThroughputGrace = 0
+	accessLogPath := setupAccessLog(t, srv)
+
+	r := require.New(t)
+
+	upstreamReady := make(chan struct{})
+	upstreamDone := make(chan struct{})
+
+	fakeRsync := rsync.NewServer(func(conn *rsync.Conn) {
+		defer conn.Close()
+		defer close(upstreamDone)
+
+		_, _, err := doServerHandshake(conn, RsyncdServerVersion)
+		r.NoError(err, "upstream handshake")
+		close(upstreamReady)
+
+		// Stay quiet so the relay phase has effectively zero throughput.
+		_, _ = io.ReadAll(conn)
+	})
+	fakeRsync.Start()
+	defer fakeRsync.Close()
+
+	srv.modules = map[string][]Target{
+		"fake": {{Upstream: "u1", Addr: fakeRsync.Listener.Addr().String()}},
+	}
+	srv.upstreams = []upstreamConfig{{Name: "u1"}}
+	srv.upstreamQueues = map[string]*queue.Queue{"u1": queue.New(0, 0)}
+
+	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	r.NoError(err)
+	conn := rsync.NewConn(rawConn)
+	defer conn.Close()
+
+	_, err = doClientHandshake(conn, RsyncdServerVersion, "fake")
+	r.NoError(err)
+
+	<-upstreamReady
+
+	start := time.Now()
+	_, err = io.ReadAll(conn)
+	r.NoError(err)
+	elapsed := time.Since(start)
+
+	r.GreaterOrEqual(elapsed, srv.MinThroughputWindow,
+		"should have waited at least one throughput window before tearing down")
+	r.Less(elapsed, 5*time.Second, "should not block far beyond the throughput window")
+
+	select {
+	case <-upstreamDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream connection was not closed after throughput floor trip")
+	}
+
+	r.Eventually(func() bool {
+		return srv.getUpstreamCounters("u1").throughputFloorTerminated.Load() == 1
+	}, time.Second, 10*time.Millisecond)
+
+	resp, err := testHTTPClient().Get("http://" + srv.HTTPListener.Addr().String() + "/metrics")
+	r.NoError(err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	r.NoError(err)
+	text := string(body)
+	assert.Contains(t, text, "# HELP rsync_proxy_throughput_floor_terminated_total")
+	assert.Contains(t, text, "# TYPE rsync_proxy_throughput_floor_terminated_total counter")
+	assert.Contains(t, text, "rsync_proxy_throughput_floor_terminated_total{upstream=\"u1\"} 1\n")
+
+	logData, err := os.ReadFile(accessLogPath)
+	r.NoError(err)
+	assert.Contains(t, string(logData), "below throughput floor")
+	assert.Contains(t, string(logData), "for module fake")
+}
+
+// TestLoadConfigPropagatesDialTimeoutAndThroughputSettings verifies
+// that dial_timeout and the min_throughput_* settings are parsed,
+// validated, and propagated into the dialer and Server fields. It also
+// verifies that an unset min_throughput_grace falls back to the
+// configured min_throughput_window, mirroring the documented default.
+func TestLoadConfigPropagatesDialTimeoutAndThroughputSettings(t *testing.T) {
+	t.Run("explicit grace", func(t *testing.T) {
+		configContent := `
+[proxy]
+listen = "127.0.0.1:0"
+listen_http = "127.0.0.1:0"
+dial_timeout = 5
+min_throughput_bytes = 65536
+min_throughput_window = 60
+min_throughput_grace = 30
+
+[upstreams.u1]
+address = "127.0.0.1:8730"
+modules = ["m1"]
+`
+		srv := New()
+		require.NoError(t, srv.ReadConfig(strings.NewReader(configContent), false))
+
+		assert.Equal(t, 5*time.Second, srv.dialer.Timeout)
+		assert.Equal(t, int64(65536), srv.MinThroughputBytes)
+		assert.Equal(t, 60*time.Second, srv.MinThroughputWindow)
+		assert.Equal(t, 30*time.Second, srv.MinThroughputGrace)
+	})
+
+	t.Run("grace defaults to window", func(t *testing.T) {
+		configContent := `
+[proxy]
+listen = "127.0.0.1:0"
+listen_http = "127.0.0.1:0"
+min_throughput_bytes = 1024
+min_throughput_window = 90
+
+[upstreams.u1]
+address = "127.0.0.1:8730"
+modules = ["m1"]
+`
+		srv := New()
+		require.NoError(t, srv.ReadConfig(strings.NewReader(configContent), false))
+
+		assert.Equal(t, int64(1024), srv.MinThroughputBytes)
+		assert.Equal(t, 90*time.Second, srv.MinThroughputWindow)
+		assert.Equal(t, 90*time.Second, srv.MinThroughputGrace,
+			"unset min_throughput_grace must default to min_throughput_window")
+	})
 }
