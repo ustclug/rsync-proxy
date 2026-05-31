@@ -209,6 +209,125 @@ func TestClientReadTimeout(t *testing.T) {
 	r.Equal(expected, string(allData))
 }
 
+// TestRelayIdleTimeoutClosesIdleConnection verifies that when
+// RelayIdleTimeout is configured and no data flows in either
+// direction during the bidirectional relay phase, the proxy tears the
+// connection down. This mirrors rsyncd's "timeout" behavior in
+// rsyncd.conf(5).
+func TestRelayIdleTimeoutClosesIdleConnection(t *testing.T) {
+	srv := startServer(t)
+	defer srv.Close()
+	srv.RelayIdleTimeout = 500 * time.Millisecond
+	accessLogPath := setupAccessLog(t, srv)
+
+	r := require.New(t)
+
+	upstreamReady := make(chan struct{})
+	upstreamDone := make(chan struct{})
+
+	fakeRsync := rsync.NewServer(func(conn *rsync.Conn) {
+		defer conn.Close()
+		defer close(upstreamDone)
+
+		_, _, err := doServerHandshake(conn, RsyncdServerVersion)
+		r.NoError(err, "upstream handshake")
+		close(upstreamReady)
+
+		// Stay quiet so the relay phase has no I/O. The proxy must
+		// close us once the idle timeout elapses; ReadAll then
+		// returns with an EOF / closed-connection error.
+		_, _ = io.ReadAll(conn)
+	})
+	fakeRsync.Start()
+	defer fakeRsync.Close()
+
+	srv.modules = map[string][]Target{
+		"fake": {{Upstream: "u1", Addr: fakeRsync.Listener.Addr().String()}},
+	}
+	srv.upstreamQueues = map[string]*queue.Queue{"u1": queue.New(0, 0)}
+
+	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	r.NoError(err)
+	conn := rsync.NewConn(rawConn)
+	defer conn.Close()
+
+	_, err = doClientHandshake(conn, RsyncdServerVersion, "fake")
+	r.NoError(err)
+
+	<-upstreamReady
+
+	start := time.Now()
+	// ReadAll should return shortly after the proxy closes our
+	// connection due to the idle timeout firing on the relay side.
+	_, err = io.ReadAll(conn)
+	r.NoError(err)
+	elapsed := time.Since(start)
+
+	// Allow generous slack: must be at least the configured timeout,
+	// and not pathologically long (e.g. waiting forever).
+	r.GreaterOrEqual(elapsed, srv.RelayIdleTimeout, "should have waited at least the idle timeout")
+	r.Less(elapsed, 5*time.Second, "should not block far beyond the idle timeout")
+
+	select {
+	case <-upstreamDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream connection was not closed after idle timeout")
+	}
+
+	logData, err := os.ReadFile(accessLogPath)
+	r.NoError(err)
+	assert.Contains(t, string(logData), "idle for module fake exceeds")
+}
+
+// TestRelayIdleTimeoutNotTriggeredWhenActive verifies that the idle
+// timeout is reset whenever data flows, so a slow but continuously
+// active stream does not get cut. The fake upstream sends data at an
+// interval well below the idle timeout for several iterations.
+func TestRelayIdleTimeoutNotTriggeredWhenActive(t *testing.T) {
+	srv := startServer(t)
+	defer srv.Close()
+	srv.RelayIdleTimeout = 2 * time.Second
+
+	r := require.New(t)
+
+	const iterations = 5
+	const interval = 200 * time.Millisecond
+
+	fakeRsync := rsync.NewServer(func(conn *rsync.Conn) {
+		defer conn.Close()
+		_, _, err := doServerHandshake(conn, RsyncdServerVersion)
+		r.NoError(err, "upstream handshake")
+
+		for i := 0; i < iterations; i++ {
+			_, err = conn.Write([]byte("data\n"))
+			r.NoError(err, "write data")
+			time.Sleep(interval)
+		}
+	})
+	fakeRsync.Start()
+	defer fakeRsync.Close()
+
+	srv.modules = map[string][]Target{
+		"fake": {{Upstream: "u1", Addr: fakeRsync.Listener.Addr().String()}},
+	}
+	srv.upstreamQueues = map[string]*queue.Queue{"u1": queue.New(0, 0)}
+
+	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	r.NoError(err)
+	conn := rsync.NewConn(rawConn)
+	defer conn.Close()
+
+	_, err = doClientHandshake(conn, RsyncdServerVersion, "fake")
+	r.NoError(err)
+
+	allData, err := io.ReadAll(conn)
+	r.NoError(err)
+
+	expected := strings.Repeat("data\n", iterations)
+	r.Equal(expected, string(allData),
+		"steadily flowing traffic must not be interrupted by the idle timeout")
+}
+
 func TestTLSRsyncListener(t *testing.T) {
 	r := require.New(t)
 

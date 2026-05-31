@@ -153,6 +153,13 @@ type Server struct {
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 
+	// RelayIdleTimeout is the idle (no I/O activity in either
+	// direction) timeout applied during the bidirectional relay phase
+	// of a connection. A value of 0 (the default) disables the
+	// timeout, matching rsyncd's "timeout = 0" behavior. See
+	// rsyncd.conf(5).
+	RelayIdleTimeout time.Duration
+
 	Motd string
 	// --- End of options section
 
@@ -194,12 +201,20 @@ type Server struct {
 type countingReader struct {
 	reader  io.Reader
 	counter *atomic.Int64
+	// lastActivity is the UnixNano timestamp of the most recent
+	// successful read (n > 0). It is updated atomically so that an
+	// idle watcher goroutine can observe activity without locking.
+	// May be nil when activity tracking is not needed.
+	lastActivity *atomic.Int64
 }
 
 func (cr *countingReader) Read(p []byte) (n int, err error) {
 	n, err = cr.reader.Read(p)
 	if n > 0 {
 		cr.counter.Add(int64(n))
+		if cr.lastActivity != nil {
+			cr.lastActivity.Store(time.Now().UnixNano())
+		}
 	}
 	return n, err
 }
@@ -302,6 +317,10 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 		}
 	}
 	s.Motd = c.Proxy.Motd
+	if c.Proxy.RelayIdleTimeoutSecs < 0 {
+		return fmt.Errorf("relay_idle_timeout must be non-negative, got %d", c.Proxy.RelayIdleTimeoutSecs)
+	}
+	s.RelayIdleTimeout = time.Duration(c.Proxy.RelayIdleTimeoutSecs) * time.Second
 	s.modules = modules
 	s.upstreams = resolvedUpstreams
 	s.upstreamQueues = s.updateUpstreamQueuesLocked(resolvedUpstreams)
@@ -745,19 +764,64 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	downReader := &countingReader{reader: downConn, counter: &info.ReceivedBytes}
 	upReader := &countingReader{reader: upConn, counter: &info.SentBytes}
 
+	// If an idle timeout is configured, share a single lastActivity
+	// timestamp between the two directions and start a watcher
+	// goroutine that tears the connections down when no data has
+	// flowed in either direction for the configured duration. This
+	// mirrors rsyncd's "timeout" semantics (rsyncd.conf(5)).
+	idleTimeout := s.RelayIdleTimeout
+	var idleTimedOut atomic.Bool
 	sentClosed := make(chan struct{})
 	receivedClosed := make(chan struct{})
 
+	if idleTimeout > 0 {
+		lastActivity := &atomic.Int64{}
+		lastActivity.Store(time.Now().UnixNano())
+		downReader.lastActivity = lastActivity
+		upReader.lastActivity = lastActivity
+
+		// Wake at most a few times per timeout window so a stalled
+		// connection is detected within roughly 1.25x the configured
+		// timeout in the worst case, while keeping wakeup overhead
+		// negligible.
+		interval := idleTimeout / 4
+		if interval < time.Second {
+			interval = time.Second
+		}
+
+		go func() {
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-sentClosed:
+					return
+				case <-receivedClosed:
+					return
+				case now := <-ticker.C:
+					last := time.Unix(0, lastActivity.Load())
+					if now.Sub(last) >= idleTimeout {
+						idleTimedOut.Store(true)
+						s.accessLog.F("client %s idle for module %s exceeds %s, closing", ip, moduleName, idleTimeout)
+						_ = upConn.Close()
+						_ = downConn.Close()
+						return
+					}
+				}
+			}
+		}()
+	}
+
 	go func() {
 		_, err := io.Copy(upConn, downReader)
-		if err != nil {
+		if err != nil && !idleTimedOut.Load() {
 			s.errorLog.F("copy from downstream to upstream: %v", err)
 		}
 		close(sentClosed)
 	}()
 	go func() {
 		_, err := io.Copy(downConn, upReader)
-		if err != nil {
+		if err != nil && !idleTimedOut.Load() {
 			s.errorLog.F("copy from upstream to downstream: %v", err)
 		}
 		close(receivedClosed)

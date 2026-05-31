@@ -26,6 +26,15 @@ type ProxySettings struct {
 	ErrorLog    string `toml:"error_log"`
 	TLSCertFile string `toml:"tls_cert_file"`
 	TLSKeyFile  string `toml:"tls_key_file"`
+	// RelayIdleTimeoutSecs is the idle timeout (in seconds) applied
+	// during the bidirectional relay phase of a connection. If no data
+	// flows in either direction for this duration, the connection is
+	// terminated. 0 (the default) disables the timeout.
+	//
+	// This mirrors the semantics of the rsyncd "timeout" setting (see
+	// rsyncd.conf(5)), which is an I/O timeout. A common choice for
+	// public mirrors is 600.
+	RelayIdleTimeoutSecs int `toml:"relay_idle_timeout"`
 }
 
 type Config struct {
