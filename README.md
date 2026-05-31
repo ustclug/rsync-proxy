@@ -60,3 +60,15 @@ cp logrotate.conf /etc/logrotate.d/
 ```shell
 cp fail2ban/filter.d/* /etc/fail2ban/filter.d/
 ```
+
+# 配置
+
+除了基本的监听地址、TLS、access/error log 等，rsync-proxy 还提供了一组连接保护与限流相关的配置项，全部默认关闭、可以按需启用，包括：relay 阶段的 idle 超时与最大持续时长、TCP keepalive 周期、单 IP 对单上游的并发连接数上限、上游拨号超时、relay 阶段的吞吐率下限（带 grace 期，避免误伤大 module 的 file-list 阶段）。各上游还可以独立配置最大并发与排队上限，并支持 PROXY protocol。
+
+完整字段含义、推荐起点值与公共 mirror 的取值依据，见 [`assets/config.example.toml`](assets/config.example.toml)。
+
+# 监控
+
+rsync-proxy 在 `listen_http` 上暴露 Prometheus 格式的 `/metrics` 端点，覆盖连接生命周期、按 module/upstream 的累计流量、排队与失败计数、各类终止原因（idle/max-duration/throughput-floor/per-IP），以及 Go runtime 指标。
+
+仓库 [`grafana/dashboard.json`](grafana/dashboard.json) 提供了一份现成的 Grafana dashboard，对应上述指标。
