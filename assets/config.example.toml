@@ -14,48 +14,60 @@ motd = "Served by rsync-proxy (https://github.com/ustclug/rsync-proxy)"
 # Idle timeout (seconds) applied during the bidirectional relay phase
 # of a client connection. If no data flows in either direction for
 # this duration, the connection is terminated. 0 (the default)
-# disables the timeout. This mirrors rsyncd's "timeout" setting in
-# rsyncd.conf(5); 600 is a common choice for public mirrors.
+# disables the timeout, mirroring rsyncd's "timeout = 0" semantics in
+# rsyncd.conf(5). For public mirrors, 600 (10 minutes) is a common
+# starting value.
 #relay_idle_timeout = 0
 
 # Hard upper bound (seconds) on the total wall-clock duration of the
 # bidirectional relay phase. When exceeded the proxy closes the
 # connection regardless of activity. rsync clients typically resume
-# on reconnect. 0 (the default) disables this cap.
+# on reconnect. 0 (the default) disables this cap. For public mirrors,
+# 14400 (4h) bounds the worst case while still accommodating large
+# initial syncs.
 #relay_max_duration = 0
 
 # TCP keepalive period (seconds) applied to accepted client
 # connections and dialed upstream connections. Helps detect
 # half-open connections (peer crashed, NAT entry reaped) within
 # minutes rather than the OS default (~2 hours). 0 (the default)
-# leaves the OS-default keepalive behavior in place.
+# leaves the OS-default keepalive behavior in place. A typical value
+# is 120 (2 minutes).
 #tcp_keepalive = 0
 
 # Default per-IP per-upstream concurrent active connection cap.
 # Limits how many simultaneous active relay connections a single
 # client IP may have to any one upstream, preventing a single client
 # from monopolizing upstream slots. 0 (the default) disables the
-# limit. Each upstream may override this via its own
-# per_ip_max_active_connections setting below.
+# limit. A typical value for public mirrors is 4. Each upstream may
+# override this via its own per_ip_max_active_connections setting
+# below. Be cautious when many legitimate clients share a single
+# egress IP (NAT, campus networks): set the cap large enough to
+# accommodate them.
 #per_ip_max_active_connections = 0
 
 # Connect timeout (seconds) when dialing upstreams. Bounds how long
 # the proxy waits for an unresponsive upstream before failing fast
 # and incrementing rsync_proxy_upstream_dial_errors_total. 0 (the
 # default) leaves the OS connect-attempt behavior in place
-# (typically ~75s of SYN retries on Linux).
+# (typically ~75s of SYN retries on Linux). For LAN upstreams a
+# short value such as 5 fails fast without keeping the slot tied up.
 #dial_timeout = 0
 
 # Throughput floor enforced during the relay phase. A connection
-# that transfers fewer than min_throughput_bytes over the most
-# recent min_throughput_window seconds is treated as slow-leeching
-# and terminated. min_throughput_grace gives a fresh connection
-# this many seconds of ramp-up before the floor is enforced;
-# defaults to min_throughput_window when unset. Set
-# min_throughput_bytes to 0 (the default) to disable the check.
+# that transfers fewer than min_throughput_bytes (counting both
+# directions) over the most recent min_throughput_window seconds is
+# treated as slow-leeching and terminated. min_throughput_grace
+# gives a fresh connection this many seconds of ramp-up before the
+# floor is enforced; this matters because rsync's initial file-list
+# phase can take many minutes for very large modules (millions of
+# files), during which the apparent throughput is low. Defaults to
+# min_throughput_window when unset. Set min_throughput_bytes to 0
+# (the default) to disable the check. Typical starting values:
+# bytes = 1048576 (1 MiB), window = 60, grace = 600.
 #min_throughput_bytes = 0
 #min_throughput_window = 60
-#min_throughput_grace = 60
+#min_throughput_grace = 600
 
 [upstreams.u1]
 address = "127.0.0.1:1234"
