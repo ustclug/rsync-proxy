@@ -129,11 +129,11 @@ type upstreamConfig struct {
 
 // upstreamCounters holds per-upstream failure counters.
 type upstreamCounters struct {
-	queueFull               atomic.Uint64
-	dialError               atomic.Uint64
-	perIPRejected           atomic.Uint64
-	idleTerminated          atomic.Uint64
-	maxDurationTerminated   atomic.Uint64
+	queueFull                 atomic.Uint64
+	dialError                 atomic.Uint64
+	perIPRejected             atomic.Uint64
+	idleTerminated            atomic.Uint64
+	maxDurationTerminated     atomic.Uint64
 	throughputFloorTerminated atomic.Uint64
 }
 
