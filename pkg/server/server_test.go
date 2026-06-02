@@ -1112,3 +1112,27 @@ func TestDiscoverModulesFromTrailingModuleBlock(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"bar", "foo"}, modules)
 }
+
+func TestModuleCountersNormalizeEmptyKeyToUnknown(t *testing.T) {
+	srv := New()
+
+	// Both empty and "unknown" inputs must point at the same internal
+	// counter, so a scrape cannot emit two lines that share the same
+	// rendered Prometheus label set.
+	c1 := srv.getModuleCounters("", "")
+	c2 := srv.getModuleCounters("unknown", "unknown")
+	assert.Same(t, c1, c2)
+
+	c1.completed.Add(7)
+
+	// metrics.go uses prometheusEscapeLabelValue on the stored key only,
+	// so the rendered output must show the normalized "unknown" value.
+	var buf bytes.Buffer
+	srv.writePrometheusMetrics(&buf, time.Now())
+	text := buf.String()
+	assert.Contains(t, text, "rsync_proxy_module_completed_connections_total{module=\"unknown\",upstream=\"unknown\"} 7\n")
+
+	// And there should be exactly one such line — i.e. no second line with
+	// an empty-string label rendered separately.
+	assert.Equal(t, 1, strings.Count(text, "rsync_proxy_module_completed_connections_total{"))
+}

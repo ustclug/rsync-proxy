@@ -213,8 +213,8 @@ func (s *Server) writePrometheusMetrics(w io.Writer, now time.Time) {
 	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_module_completed_connections_total counter")
 	for _, m := range moduleStats {
 		_, _ = fmt.Fprintf(w, "rsync_proxy_module_completed_connections_total{module=\"%s\",upstream=\"%s\"} %d\n",
-			prometheusEscapeLabelValue(prometheusLabelValueOrUnknown(m.key.module)),
-			prometheusEscapeLabelValue(prometheusLabelValueOrUnknown(m.key.upstream)),
+			prometheusEscapeLabelValue(m.key.module),
+			prometheusEscapeLabelValue(m.key.upstream),
 			m.completed)
 	}
 
@@ -222,8 +222,8 @@ func (s *Server) writePrometheusMetrics(w io.Writer, now time.Time) {
 	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_module_sent_bytes_total counter")
 	for _, m := range moduleStats {
 		_, _ = fmt.Fprintf(w, "rsync_proxy_module_sent_bytes_total{module=\"%s\",upstream=\"%s\"} %d\n",
-			prometheusEscapeLabelValue(prometheusLabelValueOrUnknown(m.key.module)),
-			prometheusEscapeLabelValue(prometheusLabelValueOrUnknown(m.key.upstream)),
+			prometheusEscapeLabelValue(m.key.module),
+			prometheusEscapeLabelValue(m.key.upstream),
 			m.sentBytes)
 	}
 
@@ -231,8 +231,8 @@ func (s *Server) writePrometheusMetrics(w io.Writer, now time.Time) {
 	_, _ = fmt.Fprintln(w, "# TYPE rsync_proxy_module_received_bytes_total counter")
 	for _, m := range moduleStats {
 		_, _ = fmt.Fprintf(w, "rsync_proxy_module_received_bytes_total{module=\"%s\",upstream=\"%s\"} %d\n",
-			prometheusEscapeLabelValue(prometheusLabelValueOrUnknown(m.key.module)),
-			prometheusEscapeLabelValue(prometheusLabelValueOrUnknown(m.key.upstream)),
+			prometheusEscapeLabelValue(m.key.module),
+			prometheusEscapeLabelValue(m.key.upstream),
 			m.recvBytes)
 	}
 }

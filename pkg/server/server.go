@@ -368,8 +368,17 @@ func (s *Server) getUpstreamCounters(name string) *upstreamCounters {
 
 // getModuleCounters returns the per-(module, upstream) counters, creating
 // them lazily on first reference. Safe for concurrent use.
+//
+// Empty module/upstream values are normalized to "unknown" so that the
+// internal sync.Map key matches what prometheusLabelValueOrUnknown emits at
+// scrape time. Otherwise an empty string and the literal "unknown" would
+// produce two distinct map entries that render to the same Prometheus label
+// set, leading to duplicate output lines.
 func (s *Server) getModuleCounters(module, upstream string) *moduleCounters {
-	key := moduleUpstreamKey{module: module, upstream: upstream}
+	key := moduleUpstreamKey{
+		module:   prometheusLabelValueOrUnknown(module),
+		upstream: prometheusLabelValueOrUnknown(upstream),
+	}
 	if v, ok := s.moduleCounters.Load(key); ok {
 		return v.(*moduleCounters)
 	}
