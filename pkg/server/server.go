@@ -59,7 +59,7 @@ type ConnInfo struct {
 	RemoteAddr    string
 	ConnectedAt   time.Time
 	Module        string
-	UpstreamAddr  string
+	Upstream      string
 	SentBytes     atomic.Int64
 	ReceivedBytes atomic.Int64
 }
@@ -70,7 +70,7 @@ type connInfoSnapshot struct {
 	RemoteAddr    string    `json:"remote"`
 	ConnectedAt   time.Time `json:"connected"`
 	Module        string    `json:"module"`
-	UpstreamAddr  string    `json:"upstream"`
+	Upstream      string    `json:"upstream"`
 	SentBytes     int64     `json:"sentBytes"`
 	ReceivedBytes int64     `json:"receivedBytes"`
 }
@@ -81,10 +81,10 @@ func (c *ConnInfo) SetModule(module string) {
 	c.Module = module
 }
 
-func (c *ConnInfo) SetUpstreamAddr(upstreamAddr string) {
+func (c *ConnInfo) SetUpstream(upstream string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.UpstreamAddr = upstreamAddr
+	c.Upstream = upstream
 }
 
 func (c *ConnInfo) snapshot() connInfoSnapshot {
@@ -96,7 +96,7 @@ func (c *ConnInfo) snapshot() connInfoSnapshot {
 		RemoteAddr:    c.RemoteAddr,
 		ConnectedAt:   c.ConnectedAt,
 		Module:        c.Module,
-		UpstreamAddr:  c.UpstreamAddr,
+		Upstream:      c.Upstream,
 		SentBytes:     c.SentBytes.Load(),
 		ReceivedBytes: c.ReceivedBytes.Load(),
 	}
@@ -606,7 +606,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	target := targets[chooseTargetByClientIP(net.ParseIP(ip), len(targets))]
 	upstreamAddr := target.Addr
 	useProxyProtocol := target.UseProxyProtocol
-	info.SetUpstreamAddr(upstreamAddr)
+	info.SetUpstream(target.Upstream)
 
 	upstreamQueue, ok := s.getQueueForUpstream(target.Upstream)
 	if !ok {

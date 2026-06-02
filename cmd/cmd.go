@@ -90,7 +90,7 @@ func SendConnectionsRequest(addr string, stdout, stderr io.Writer) error {
 			Index         int       `json:"index"`
 			RemoteAddr    string    `json:"remote"`
 			Module        string    `json:"module"`
-			UpstreamAddr  string    `json:"upstream"`
+			Upstream      string    `json:"upstream"`
 			ConnectedAt   time.Time `json:"connected"`
 			ReceivedBytes int64     `json:"receivedBytes"`
 			SentBytes     int64     `json:"sentBytes"`
@@ -125,7 +125,7 @@ func SendConnectionsRequest(addr string, stdout, stderr io.Writer) error {
 			tw.AlignRight,   // Index
 			tw.AlignRight,   // RemoteAddr
 			tw.AlignDefault, // Module
-			tw.AlignRight,   // UpstreamAddr
+			tw.AlignDefault, // Upstream
 			tw.AlignDefault, // ConnectedAt
 			tw.AlignRight,   // ReceivedBytes
 			tw.AlignRight,   // SentBytes
@@ -137,7 +137,7 @@ func SendConnectionsRequest(addr string, stdout, stderr io.Writer) error {
 			strconv.Itoa(conn.Index),
 			conn.RemoteAddr,
 			conn.Module,
-			conn.UpstreamAddr,
+			conn.Upstream,
 			conn.ConnectedAt.Format(time.DateTime),
 			strconv.FormatInt(conn.ReceivedBytes, 10),
 			strconv.FormatInt(conn.SentBytes, 10),

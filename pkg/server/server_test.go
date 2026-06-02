@@ -375,7 +375,7 @@ func TestStatusIncludesSelectedUpstream(t *testing.T) {
 		if len(infos) != 1 {
 			return false
 		}
-		return infos[0].snapshot().UpstreamAddr == upstreamAddr
+		return infos[0].snapshot().Upstream == "u1"
 	}, time.Second, 10*time.Millisecond)
 
 	wg.Done()
@@ -445,7 +445,7 @@ func TestMetricsIncludesActiveConnections(t *testing.T) {
 		if len(infos) != 1 {
 			return false
 		}
-		return infos[0].snapshot().UpstreamAddr == upstreamAddr
+		return infos[0].snapshot().Upstream == "u1"
 	}, time.Second, 10*time.Millisecond)
 
 	resp, err := testHTTPClient().Get("http://" + srv.HTTPListener.Addr().String() + "/metrics")
@@ -458,14 +458,15 @@ func TestMetricsIncludesActiveConnections(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Contains(t, text, "rsync_proxy_active_connections 1\n")
-	assert.Contains(t, text, fmt.Sprintf("rsync_proxy_active_connections_by_module{module=\"fake\",upstream=%q} 1\n", upstreamAddr))
+	assert.Contains(t, text, "rsync_proxy_active_connections_by_module{module=\"fake\",upstream=\"u1\"} 1\n")
 	assert.Contains(t, text, "rsync_proxy_connection_sent_bytes{index=\"")
 	assert.Contains(t, text, "module=\"fake\"")
-	assert.Contains(t, text, fmt.Sprintf("upstream=%q", upstreamAddr))
+	assert.Contains(t, text, "upstream=\"u1\"")
 	assert.Contains(t, text, "rsync_proxy_connection_received_bytes{index=\"")
 	assert.Contains(t, text, "rsync_proxy_connection_connected_timestamp_seconds{index=\"")
 	assert.Contains(t, text, "rsync_proxy_connection_duration_seconds{index=\"")
 	assert.NotContains(t, text, rawConn.LocalAddr().String())
+	assert.NotContains(t, text, upstreamAddr)
 
 	wg.Done()
 }
@@ -655,12 +656,12 @@ func TestPrometheusConnectionGroupingUsesStructuredKey(t *testing.T) {
 
 	first := &ConnInfo{Index: 1, ConnectedAt: time.Unix(100, 0)}
 	first.Module = "a\xffb"
-	first.UpstreamAddr = "c"
+	first.Upstream = "c"
 	srv.connInfo.Store(first.Index, first)
 
 	second := &ConnInfo{Index: 2, ConnectedAt: time.Unix(100, 0)}
 	second.Module = "a"
-	second.UpstreamAddr = "b\xffc"
+	second.Upstream = "b\xffc"
 	srv.connInfo.Store(second.Index, second)
 
 	var buf bytes.Buffer
@@ -676,7 +677,7 @@ func TestPrometheusDurationIncludesFractionalSeconds(t *testing.T) {
 	srv := New()
 	conn := &ConnInfo{Index: 1, ConnectedAt: time.Unix(100, 0)}
 	conn.Module = "fake"
-	conn.UpstreamAddr = "127.0.0.1:873"
+	conn.Upstream = "127.0.0.1:873"
 	srv.connInfo.Store(conn.Index, conn)
 
 	var buf bytes.Buffer
