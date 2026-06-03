@@ -863,7 +863,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	// IP from monopolizing both the active slots and the queue.
 	if perIPLimit := s.getPerIPLimitForUpstream(target.Upstream); perIPLimit > 0 {
 		counter := s.getPerIPCounter(target.Upstream, ip)
-		if n := counter.Add(1); int(n) > perIPLimit {
+		if n := counter.Add(1); n > int64(perIPLimit) {
 			counter.Add(-1)
 			s.getUpstreamCounters(target.Upstream).perIPRejected.Add(1)
 			s.accessLog.F("client %s rejected for upstream %s module %s: per-IP cap of %d reached", ip, target.Upstream, moduleName, perIPLimit)
@@ -1012,10 +1012,14 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 			upReader.lastActivity = lastActivity
 		}
 
-		// Wake at most a few times per the smallest of the
-		// configured windows so timeouts are detected within roughly
-		// 1.25x the configured value in the worst case, while keeping
-		// wakeup overhead negligible.
+		// Pick a wakeup interval as 1/4 of the smallest enabled window
+		// so the worst-case detection latency is roughly 1.25x the
+		// configured value, while keeping wakeup overhead negligible.
+		// A 1s floor is then applied: detection latency therefore
+		// degrades for sub-4-second settings (e.g. a 500ms idle
+		// timeout will detect inside ~1s + the 500ms slack rather
+		// than 125ms). In practice all production-meaningful values
+		// are well above 4 seconds, so this only matters for tests.
 		interval := time.Duration(0)
 		bumpInterval := func(d time.Duration) {
 			if d <= 0 {
