@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/olekukonko/tablewriter"
 	"github.com/olekukonko/tablewriter/tw"
 	"github.com/spf13/cobra"
@@ -71,6 +72,55 @@ func SendReloadRequest(addr string, stdout, stderr io.Writer) error {
 	}
 	_, _ = io.Copy(out, resp.Body)
 	return err
+}
+
+var (
+	largeNumberColor = color.New(color.FgRed).FprintfFunc()
+	gigabytesColor   = color.New(color.FgGreen).FprintfFunc()
+	megabytesColor   = color.New(color.FgCyan).FprintfFunc()
+	mutedColor       = color.New(color.FgHiBlack).Add(color.Bold)
+)
+
+func formatSizeColored(size int64) string {
+	const (
+		MB = 1_000_000
+		GB = 1_000 * MB
+		TB = 1_000 * GB
+	)
+	if size == 0 {
+		return mutedColor.Sprint("0")
+	}
+	tb := size / TB
+	gb := size / GB % 1000
+	mb := size / MB % 1000
+	remainder := size % MB
+
+	padGB := tb > 0
+	padMB := padGB || gb > 0
+	padRemainder := padMB || mb > 0
+
+	sb := strings.Builder{}
+	if tb > 0 {
+		largeNumberColor(&sb, "%d", tb)
+	}
+	if gb > 0 || padGB {
+		if padGB {
+			gigabytesColor(&sb, "%03d", gb)
+		} else {
+			gigabytesColor(&sb, "%d", gb)
+		}
+	}
+	if mb > 0 || padMB {
+		if padMB {
+			megabytesColor(&sb, "%03d", mb)
+		} else {
+			megabytesColor(&sb, "%d", mb)
+		}
+	}
+	if remainder > 0 || padRemainder {
+		fmt.Fprintf(&sb, "%06d", remainder)
+	}
+	return sb.String()
 }
 
 func SendConnectionsRequest(addr string, stdout, stderr io.Writer) error {
@@ -139,8 +189,8 @@ func SendConnectionsRequest(addr string, stdout, stderr io.Writer) error {
 			conn.Module,
 			conn.Upstream,
 			conn.ConnectedAt.Format(time.DateTime),
-			strconv.FormatInt(conn.ReceivedBytes, 10),
-			strconv.FormatInt(conn.SentBytes, 10),
+			formatSizeColored(conn.ReceivedBytes),
+			formatSizeColored(conn.SentBytes),
 		})
 	}
 	return table.Render()
@@ -204,9 +254,10 @@ func printVersion(out io.Writer, pretty bool) error {
 
 func newConnectionsCmd() *cobra.Command {
 	c := &cobra.Command{
-		Use:   "connections",
-		Short: "Show active connections",
-		Args:  cobra.NoArgs,
+		Use:     "connections",
+		Short:   "Show active connections",
+		Aliases: []string{"conns", "conn"},
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return SendConnectionsRequest(daemonSocket, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
