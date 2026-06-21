@@ -209,6 +209,144 @@ func TestClientReadTimeout(t *testing.T) {
 	r.Equal(expected, string(allData))
 }
 
+// TestRelayIdleTimeoutClosesIdleConnection verifies that when
+// RelayIdleTimeout is configured and no data flows in either
+// direction during the bidirectional relay phase, the proxy tears the
+// connection down. This mirrors rsyncd's "timeout" behavior in
+// rsyncd.conf(5).
+func TestRelayIdleTimeoutClosesIdleConnection(t *testing.T) {
+	srv := startServer(t)
+	defer srv.Close()
+	srv.RelayIdleTimeout = 500 * time.Millisecond
+	accessLogPath := setupAccessLog(t, srv)
+
+	r := require.New(t)
+
+	upstreamReady := make(chan struct{})
+	upstreamDone := make(chan struct{})
+
+	fakeRsync := rsync.NewServer(func(conn *rsync.Conn) {
+		defer conn.Close()
+		defer close(upstreamDone)
+
+		_, _, err := doServerHandshake(conn, RsyncdServerVersion)
+		r.NoError(err, "upstream handshake")
+		close(upstreamReady)
+
+		// Stay quiet so the relay phase has no I/O. The proxy must
+		// close us once the idle timeout elapses; ReadAll then
+		// returns with an EOF / closed-connection error.
+		_, _ = io.ReadAll(conn)
+	})
+	fakeRsync.Start()
+	defer fakeRsync.Close()
+
+	srv.modules = map[string][]Target{
+		"fake": {{Upstream: "u1", Addr: fakeRsync.Listener.Addr().String()}},
+	}
+	srv.upstreams = []upstreamConfig{{Name: "u1"}}
+	srv.upstreamQueues = map[string]*queue.Queue{"u1": queue.New(0, 0)}
+
+	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	r.NoError(err)
+	conn := rsync.NewConn(rawConn)
+	defer conn.Close()
+
+	_, err = doClientHandshake(conn, RsyncdServerVersion, "fake")
+	r.NoError(err)
+
+	<-upstreamReady
+
+	start := time.Now()
+	// ReadAll should return shortly after the proxy closes our
+	// connection due to the idle timeout firing on the relay side.
+	_, err = io.ReadAll(conn)
+	r.NoError(err)
+	elapsed := time.Since(start)
+
+	// Allow generous slack: must be at least the configured timeout,
+	// and not pathologically long (e.g. waiting forever).
+	r.GreaterOrEqual(elapsed, srv.RelayIdleTimeout, "should have waited at least the idle timeout")
+	r.Less(elapsed, 5*time.Second, "should not block far beyond the idle timeout")
+
+	select {
+	case <-upstreamDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream connection was not closed after idle timeout")
+	}
+
+	logData, err := os.ReadFile(accessLogPath)
+	r.NoError(err)
+	assert.Contains(t, string(logData), "idle for module fake exceeds")
+
+	// The watcher must record the termination reason on the
+	// per-upstream counter and surface it via /metrics so that
+	// operators can distinguish a hung-and-killed connection from a
+	// normal completion.
+	r.Eventually(func() bool {
+		return srv.getUpstreamCounters("u1").idleTerminated.Load() == 1
+	}, time.Second, 10*time.Millisecond)
+
+	resp, err := testHTTPClient().Get("http://" + srv.HTTPListener.Addr().String() + "/metrics")
+	r.NoError(err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	r.NoError(err)
+	text := string(body)
+	assert.Contains(t, text, "# HELP rsync_proxy_relay_idle_timeout_terminated_total")
+	assert.Contains(t, text, "# TYPE rsync_proxy_relay_idle_timeout_terminated_total counter")
+	assert.Contains(t, text, "rsync_proxy_relay_idle_timeout_terminated_total{upstream=\"u1\"} 1\n")
+}
+
+// TestRelayIdleTimeoutNotTriggeredWhenActive verifies that the idle
+// timeout is reset whenever data flows, so a slow but continuously
+// active stream does not get cut. The fake upstream sends data at an
+// interval well below the idle timeout for several iterations.
+func TestRelayIdleTimeoutNotTriggeredWhenActive(t *testing.T) {
+	srv := startServer(t)
+	defer srv.Close()
+	srv.RelayIdleTimeout = 2 * time.Second
+
+	r := require.New(t)
+
+	const iterations = 5
+	const interval = 200 * time.Millisecond
+
+	fakeRsync := rsync.NewServer(func(conn *rsync.Conn) {
+		defer conn.Close()
+		_, _, err := doServerHandshake(conn, RsyncdServerVersion)
+		r.NoError(err, "upstream handshake")
+
+		for i := 0; i < iterations; i++ {
+			_, err = conn.Write([]byte("data\n"))
+			r.NoError(err, "write data")
+			time.Sleep(interval)
+		}
+	})
+	fakeRsync.Start()
+	defer fakeRsync.Close()
+
+	srv.modules = map[string][]Target{
+		"fake": {{Upstream: "u1", Addr: fakeRsync.Listener.Addr().String()}},
+	}
+	srv.upstreamQueues = map[string]*queue.Queue{"u1": queue.New(0, 0)}
+
+	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	r.NoError(err)
+	conn := rsync.NewConn(rawConn)
+	defer conn.Close()
+
+	_, err = doClientHandshake(conn, RsyncdServerVersion, "fake")
+	r.NoError(err)
+
+	allData, err := io.ReadAll(conn)
+	r.NoError(err)
+
+	expected := strings.Repeat("data\n", iterations)
+	r.Equal(expected, string(allData),
+		"steadily flowing traffic must not be interrupted by the idle timeout")
+}
+
 func TestTLSRsyncListener(t *testing.T) {
 	r := require.New(t)
 
@@ -1136,4 +1274,487 @@ func TestModuleCountersNormalizeEmptyKeyToUnknown(t *testing.T) {
 	// And there should be exactly one such line — i.e. no second line with
 	// an empty-string label rendered separately.
 	assert.Equal(t, 1, strings.Count(text, "rsync_proxy_module_completed_connections_total{"))
+}
+
+// TestPerIPCapRejectsConnectionsBeyondLimit verifies that when a
+// per-IP active connection cap is configured for an upstream, a
+// second simultaneous connection from the same client IP to the same
+// upstream is rejected with an @ERROR message, the perIPRejected
+// counter is incremented, and the rejection is reflected in the
+// /metrics output.
+func TestPerIPCapRejectsConnectionsBeyondLimit(t *testing.T) {
+	srv := startServer(t)
+	defer srv.Close()
+	accessLogPath := setupAccessLog(t, srv)
+
+	var release sync.WaitGroup
+	release.Add(1)
+
+	upstream := rsync.NewServer(func(conn *rsync.Conn) {
+		defer conn.Close()
+		_, _, err := doServerHandshake(conn, RsyncdServerVersion)
+		require.NoError(t, err)
+		release.Wait()
+	})
+	upstream.Start()
+	defer upstream.Close()
+
+	srv.reloadLock.Lock()
+	srv.upstreams = []upstreamConfig{
+		{Name: "u1", PerIPMaxActiveConns: 1},
+	}
+	srv.modules = map[string][]Target{
+		"fake": {{Upstream: "u1", Addr: upstream.Listener.Addr().String()}},
+	}
+	srv.upstreamQueues = map[string]*queue.Queue{"u1": queue.New(0, 0)}
+	srv.reloadLock.Unlock()
+
+	// First connection occupies the per-IP slot.
+	c1Raw, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	require.NoError(t, err)
+	c1 := rsync.NewConn(c1Raw)
+	defer c1.Close()
+	_, err = doClientHandshake(c1, RsyncdServerVersion, "fake")
+	require.NoError(t, err)
+
+	// Second connection from the same IP must be rejected.
+	c2Raw, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	require.NoError(t, err)
+	c2 := rsync.NewConn(c2Raw)
+	defer c2.Close()
+	_, err = doClientHandshake(c2, RsyncdServerVersion, "fake")
+	require.NoError(t, err)
+
+	body, err := io.ReadAll(c2)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "@ERROR: per-IP connection limit")
+	assert.Contains(t, string(body), "for upstream u1")
+
+	require.Eventually(t, func() bool {
+		return srv.getUpstreamCounters("u1").perIPRejected.Load() == 1
+	}, time.Second, 10*time.Millisecond)
+
+	resp, err := testHTTPClient().Get("http://" + srv.HTTPListener.Addr().String() + "/metrics")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	metricsBody, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	text := string(metricsBody)
+	assert.Contains(t, text, "# HELP rsync_proxy_per_ip_rejected_total")
+	assert.Contains(t, text, "# TYPE rsync_proxy_per_ip_rejected_total counter")
+	assert.Contains(t, text, "rsync_proxy_per_ip_rejected_total{upstream=\"u1\"} 1\n")
+
+	logData, err := os.ReadFile(accessLogPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(logData), "per-IP cap of 1 reached")
+
+	release.Done()
+}
+
+// TestRelayMaxDurationClosesLongConnection verifies that when
+// RelayMaxDuration is configured, an otherwise-active relay (no idle
+// timeout) is forcibly torn down once it exceeds the configured
+// wall-clock cap.
+func TestRelayMaxDurationClosesLongConnection(t *testing.T) {
+	srv := startServer(t)
+	defer srv.Close()
+	srv.RelayIdleTimeout = 0
+	srv.RelayMaxDuration = 500 * time.Millisecond
+	accessLogPath := setupAccessLog(t, srv)
+
+	r := require.New(t)
+
+	upstreamReady := make(chan struct{})
+	upstreamDone := make(chan struct{})
+
+	fakeRsync := rsync.NewServer(func(conn *rsync.Conn) {
+		defer conn.Close()
+		defer close(upstreamDone)
+
+		_, _, err := doServerHandshake(conn, RsyncdServerVersion)
+		r.NoError(err, "upstream handshake")
+		close(upstreamReady)
+
+		// Stay quiet so the relay phase has no I/O. With idle timeout
+		// disabled, only the max-duration watcher can tear this
+		// connection down.
+		_, _ = io.ReadAll(conn)
+	})
+	fakeRsync.Start()
+	defer fakeRsync.Close()
+
+	srv.modules = map[string][]Target{
+		"fake": {{Upstream: "u1", Addr: fakeRsync.Listener.Addr().String()}},
+	}
+	srv.upstreams = []upstreamConfig{{Name: "u1"}}
+	srv.upstreamQueues = map[string]*queue.Queue{"u1": queue.New(0, 0)}
+
+	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	r.NoError(err)
+	conn := rsync.NewConn(rawConn)
+	defer conn.Close()
+
+	_, err = doClientHandshake(conn, RsyncdServerVersion, "fake")
+	r.NoError(err)
+
+	<-upstreamReady
+
+	start := time.Now()
+	_, err = io.ReadAll(conn)
+	r.NoError(err)
+	elapsed := time.Since(start)
+
+	r.GreaterOrEqual(elapsed, srv.RelayMaxDuration, "should have waited at least the max duration")
+	r.Less(elapsed, 5*time.Second, "should not block far beyond the max duration")
+
+	select {
+	case <-upstreamDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream connection was not closed after max duration")
+	}
+
+	logData, err := os.ReadFile(accessLogPath)
+	r.NoError(err)
+	assert.Contains(t, string(logData), "exceeded max relay duration")
+	assert.Contains(t, string(logData), "for module fake")
+
+	r.Eventually(func() bool {
+		return srv.getUpstreamCounters("u1").maxDurationTerminated.Load() == 1
+	}, time.Second, 10*time.Millisecond)
+
+	resp, err := testHTTPClient().Get("http://" + srv.HTTPListener.Addr().String() + "/metrics")
+	r.NoError(err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	r.NoError(err)
+	text := string(body)
+	assert.Contains(t, text, "# HELP rsync_proxy_relay_max_duration_terminated_total")
+	assert.Contains(t, text, "# TYPE rsync_proxy_relay_max_duration_terminated_total counter")
+	assert.Contains(t, text, "rsync_proxy_relay_max_duration_terminated_total{upstream=\"u1\"} 1\n")
+}
+
+// TestApplyTCPKeepAliveOnTCPConn exercises the applyTCPKeepAlive
+// helper end-to-end on a real *net.TCPConn. We cannot portably read
+// SO_KEEPALIVE/TCP_KEEPIDLE back via the standard library, so we
+// verify that the helper does not error and is safe to invoke with
+// zero or negative periods.
+func TestApplyTCPKeepAliveOnTCPConn(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			accepted <- nil
+			return
+		}
+		accepted <- c
+	}()
+
+	clientConn, err := net.Dial("tcp", ln.Addr().String())
+	require.NoError(t, err)
+	defer clientConn.Close()
+
+	srvConn := <-accepted
+	require.NotNil(t, srvConn)
+	defer srvConn.Close()
+
+	// Should be a no-op for a zero/negative period.
+	applyTCPKeepAlive(srvConn, 0)
+	applyTCPKeepAlive(srvConn, -1*time.Second)
+
+	// Should successfully apply the keepalive on a real *net.TCPConn.
+	applyTCPKeepAlive(srvConn, 45*time.Second)
+	_, ok := srvConn.(*net.TCPConn)
+	assert.True(t, ok, "test sanity: accepted conn should be *net.TCPConn")
+}
+
+// TestLoadConfigPropagatesTCPKeepAliveToDialer verifies that the
+// tcp_keepalive proxy setting is parsed, validated, and propagated to
+// both the Server.TCPKeepAlive field and the underlying dialer used
+// for upstream connections.
+func TestLoadConfigPropagatesTCPKeepAliveToDialer(t *testing.T) {
+	configContent := `
+[proxy]
+listen = "127.0.0.1:0"
+listen_http = "127.0.0.1:0"
+tcp_keepalive = 45
+relay_max_duration = 7200
+per_ip_max_active_connections = 4
+
+[upstreams.u1]
+address = "127.0.0.1:8730"
+modules = ["m1"]
+`
+	srv := New()
+	require.NoError(t, srv.ReadConfig(strings.NewReader(configContent), false))
+
+	assert.Equal(t, 45*time.Second, srv.TCPKeepAlive)
+	assert.Equal(t, 45*time.Second, srv.dialer.KeepAlive)
+	assert.Equal(t, 2*time.Hour, srv.RelayMaxDuration)
+
+	srv.reloadLock.RLock()
+	defer srv.reloadLock.RUnlock()
+	require.Len(t, srv.upstreams, 1)
+	assert.Equal(t, 4, srv.upstreams[0].PerIPMaxActiveConns)
+}
+
+// TestLoadConfigRejectsNegativeTimings verifies that loadConfig
+// rejects negative values for the new connection-control settings.
+func TestLoadConfigRejectsNegativeTimings(t *testing.T) {
+	cases := []struct {
+		name    string
+		config  string
+		wantMsg string
+	}{
+		{
+			name: "relay_max_duration",
+			config: `
+[proxy]
+listen = "127.0.0.1:0"
+listen_http = "127.0.0.1:0"
+relay_max_duration = -1
+
+[upstreams.u1]
+address = "127.0.0.1:8730"
+modules = ["m1"]
+`,
+			wantMsg: "relay_max_duration must be non-negative",
+		},
+		{
+			name: "tcp_keepalive",
+			config: `
+[proxy]
+listen = "127.0.0.1:0"
+listen_http = "127.0.0.1:0"
+tcp_keepalive = -5
+
+[upstreams.u1]
+address = "127.0.0.1:8730"
+modules = ["m1"]
+`,
+			wantMsg: "tcp_keepalive must be non-negative",
+		},
+		{
+			name: "per_ip_max_active_connections",
+			config: `
+[proxy]
+listen = "127.0.0.1:0"
+listen_http = "127.0.0.1:0"
+per_ip_max_active_connections = -2
+
+[upstreams.u1]
+address = "127.0.0.1:8730"
+modules = ["m1"]
+`,
+			wantMsg: "per_ip_max_active_connections must be non-negative",
+		},
+		{
+			name: "dial_timeout",
+			config: `
+[proxy]
+listen = "127.0.0.1:0"
+listen_http = "127.0.0.1:0"
+dial_timeout = -1
+
+[upstreams.u1]
+address = "127.0.0.1:8730"
+modules = ["m1"]
+`,
+			wantMsg: "dial_timeout must be non-negative",
+		},
+		{
+			name: "min_throughput_bytes",
+			config: `
+[proxy]
+listen = "127.0.0.1:0"
+listen_http = "127.0.0.1:0"
+min_throughput_bytes = -1
+
+[upstreams.u1]
+address = "127.0.0.1:8730"
+modules = ["m1"]
+`,
+			wantMsg: "min_throughput_bytes must be non-negative",
+		},
+		{
+			name: "min_throughput_window",
+			config: `
+[proxy]
+listen = "127.0.0.1:0"
+listen_http = "127.0.0.1:0"
+min_throughput_window = -1
+
+[upstreams.u1]
+address = "127.0.0.1:8730"
+modules = ["m1"]
+`,
+			wantMsg: "min_throughput_window must be non-negative",
+		},
+		{
+			name: "min_throughput_grace",
+			config: `
+[proxy]
+listen = "127.0.0.1:0"
+listen_http = "127.0.0.1:0"
+min_throughput_grace = -1
+
+[upstreams.u1]
+address = "127.0.0.1:8730"
+modules = ["m1"]
+`,
+			wantMsg: "min_throughput_grace must be non-negative",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := New()
+			err := srv.ReadConfig(strings.NewReader(tc.config), false)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantMsg)
+		})
+	}
+}
+
+// TestThroughputFloorTerminatesSlowConnection verifies that when a
+// throughput floor is configured, an otherwise-active relay (no idle
+// timeout, no max-duration) which transfers fewer than MinThroughputBytes
+// per MinThroughputWindow is forcibly torn down once the grace period
+// elapses, the per-upstream counter is incremented, and the rejection
+// is reflected in /metrics and the access log.
+func TestThroughputFloorTerminatesSlowConnection(t *testing.T) {
+	srv := startServer(t)
+	defer srv.Close()
+	srv.RelayIdleTimeout = 0
+	srv.RelayMaxDuration = 0
+	// Demand effectively infeasible throughput in a 200ms window so
+	// the floor always trips. Grace = 0 so the very first sample
+	// after the window elapses is enough.
+	srv.MinThroughputBytes = 1 << 30
+	srv.MinThroughputWindow = 200 * time.Millisecond
+	srv.MinThroughputGrace = 0
+	accessLogPath := setupAccessLog(t, srv)
+
+	r := require.New(t)
+
+	upstreamReady := make(chan struct{})
+	upstreamDone := make(chan struct{})
+
+	fakeRsync := rsync.NewServer(func(conn *rsync.Conn) {
+		defer conn.Close()
+		defer close(upstreamDone)
+
+		_, _, err := doServerHandshake(conn, RsyncdServerVersion)
+		r.NoError(err, "upstream handshake")
+		close(upstreamReady)
+
+		// Stay quiet so the relay phase has effectively zero throughput.
+		_, _ = io.ReadAll(conn)
+	})
+	fakeRsync.Start()
+	defer fakeRsync.Close()
+
+	srv.modules = map[string][]Target{
+		"fake": {{Upstream: "u1", Addr: fakeRsync.Listener.Addr().String()}},
+	}
+	srv.upstreams = []upstreamConfig{{Name: "u1"}}
+	srv.upstreamQueues = map[string]*queue.Queue{"u1": queue.New(0, 0)}
+
+	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	r.NoError(err)
+	conn := rsync.NewConn(rawConn)
+	defer conn.Close()
+
+	_, err = doClientHandshake(conn, RsyncdServerVersion, "fake")
+	r.NoError(err)
+
+	<-upstreamReady
+
+	start := time.Now()
+	_, err = io.ReadAll(conn)
+	r.NoError(err)
+	elapsed := time.Since(start)
+
+	r.GreaterOrEqual(elapsed, srv.MinThroughputWindow,
+		"should have waited at least one throughput window before tearing down")
+	r.Less(elapsed, 5*time.Second, "should not block far beyond the throughput window")
+
+	select {
+	case <-upstreamDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream connection was not closed after throughput floor trip")
+	}
+
+	r.Eventually(func() bool {
+		return srv.getUpstreamCounters("u1").throughputFloorTerminated.Load() == 1
+	}, time.Second, 10*time.Millisecond)
+
+	resp, err := testHTTPClient().Get("http://" + srv.HTTPListener.Addr().String() + "/metrics")
+	r.NoError(err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	r.NoError(err)
+	text := string(body)
+	assert.Contains(t, text, "# HELP rsync_proxy_throughput_floor_terminated_total")
+	assert.Contains(t, text, "# TYPE rsync_proxy_throughput_floor_terminated_total counter")
+	assert.Contains(t, text, "rsync_proxy_throughput_floor_terminated_total{upstream=\"u1\"} 1\n")
+
+	logData, err := os.ReadFile(accessLogPath)
+	r.NoError(err)
+	assert.Contains(t, string(logData), "below throughput floor")
+	assert.Contains(t, string(logData), "for module fake")
+}
+
+// TestLoadConfigPropagatesDialTimeoutAndThroughputSettings verifies
+// that dial_timeout and the min_throughput_* settings are parsed,
+// validated, and propagated into the dialer and Server fields. It also
+// verifies that an unset min_throughput_grace falls back to the
+// configured min_throughput_window, mirroring the documented default.
+func TestLoadConfigPropagatesDialTimeoutAndThroughputSettings(t *testing.T) {
+	t.Run("explicit grace", func(t *testing.T) {
+		configContent := `
+[proxy]
+listen = "127.0.0.1:0"
+listen_http = "127.0.0.1:0"
+dial_timeout = 5
+min_throughput_bytes = 65536
+min_throughput_window = 60
+min_throughput_grace = 30
+
+[upstreams.u1]
+address = "127.0.0.1:8730"
+modules = ["m1"]
+`
+		srv := New()
+		require.NoError(t, srv.ReadConfig(strings.NewReader(configContent), false))
+
+		assert.Equal(t, 5*time.Second, srv.dialer.Timeout)
+		assert.Equal(t, int64(65536), srv.MinThroughputBytes)
+		assert.Equal(t, 60*time.Second, srv.MinThroughputWindow)
+		assert.Equal(t, 30*time.Second, srv.MinThroughputGrace)
+	})
+
+	t.Run("grace defaults to window", func(t *testing.T) {
+		configContent := `
+[proxy]
+listen = "127.0.0.1:0"
+listen_http = "127.0.0.1:0"
+min_throughput_bytes = 1024
+min_throughput_window = 90
+
+[upstreams.u1]
+address = "127.0.0.1:8730"
+modules = ["m1"]
+`
+		srv := New()
+		require.NoError(t, srv.ReadConfig(strings.NewReader(configContent), false))
+
+		assert.Equal(t, int64(1024), srv.MinThroughputBytes)
+		assert.Equal(t, 90*time.Second, srv.MinThroughputWindow)
+		assert.Equal(t, 90*time.Second, srv.MinThroughputGrace,
+			"unset min_throughput_grace must default to min_throughput_window")
+	})
 }
