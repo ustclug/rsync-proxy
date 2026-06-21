@@ -1275,6 +1275,7 @@ func TestModuleCountersNormalizeEmptyKeyToUnknown(t *testing.T) {
 	// an empty-string label rendered separately.
 	assert.Equal(t, 1, strings.Count(text, "rsync_proxy_module_completed_connections_total{"))
 }
+
 // TestPerIPCapRejectsConnectionsBeyondLimit verifies that when a
 // per-IP active connection cap is configured for an upstream, a
 // second simultaneous connection from the same client IP to the same
