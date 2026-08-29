@@ -1469,6 +1469,12 @@ func TestApplyTCPKeepAliveOnTCPConn(t *testing.T) {
 	applyTCPKeepAlive(srvConn, 45*time.Second)
 	_, ok := srvConn.(*net.TCPConn)
 	assert.True(t, ok, "test sanity: accepted conn should be *net.TCPConn")
+
+	// TLS listeners pass a *tls.Conn to handleConn. Ensure the helper
+	// reaches the underlying TCP connection without requiring a TLS
+	// handshake.
+	tlsConn := tls.Server(srvConn, &tls.Config{})
+	applyTCPKeepAlive(tlsConn, 45*time.Second)
 }
 
 // TestLoadConfigPropagatesTCPKeepAliveToDialer verifies that the
@@ -1756,5 +1762,24 @@ modules = ["m1"]
 		assert.Equal(t, 90*time.Second, srv.MinThroughputWindow)
 		assert.Equal(t, 90*time.Second, srv.MinThroughputGrace,
 			"unset min_throughput_grace must default to min_throughput_window")
+	})
+
+	t.Run("window defaults to sixty seconds", func(t *testing.T) {
+		configContent := `
+[proxy]
+listen = "127.0.0.1:0"
+listen_http = "127.0.0.1:0"
+min_throughput_bytes = 1024
+
+[upstreams.u1]
+address = "127.0.0.1:8730"
+modules = ["m1"]
+`
+		srv := New()
+		require.NoError(t, srv.ReadConfig(strings.NewReader(configContent), false))
+
+		assert.Equal(t, int64(1024), srv.MinThroughputBytes)
+		assert.Equal(t, 60*time.Second, srv.MinThroughputWindow)
+		assert.Equal(t, 60*time.Second, srv.MinThroughputGrace)
 	})
 }

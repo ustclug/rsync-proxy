@@ -403,13 +403,17 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 	s.RelayMaxDuration = time.Duration(c.Proxy.RelayMaxDurationSecs) * time.Second
 	s.TCPKeepAlive = time.Duration(c.Proxy.TCPKeepAliveSecs) * time.Second
 	s.MinThroughputBytes = c.Proxy.MinThroughputBytes
-	s.MinThroughputWindow = time.Duration(c.Proxy.MinThroughputWindowSecs) * time.Second
+	windowSecs := c.Proxy.MinThroughputWindowSecs
+	if windowSecs == 0 {
+		windowSecs = 60
+	}
+	s.MinThroughputWindow = time.Duration(windowSecs) * time.Second
 	graceSecs := c.Proxy.MinThroughputGraceSecs
 	if graceSecs == 0 {
 		// Default the grace period to the window itself: a fresh
 		// connection gets one full window to ramp up before the
 		// floor is enforced.
-		graceSecs = c.Proxy.MinThroughputWindowSecs
+		graceSecs = windowSecs
 	}
 	s.MinThroughputGrace = time.Duration(graceSecs) * time.Second
 	// Reflect the new keepalive and dial-timeout settings on the
@@ -575,11 +579,15 @@ func (s *Server) getPerIPLimitForUpstream(name string) int {
 }
 
 // applyTCPKeepAlive enables TCP keepalive on the given connection if
-// it is a *net.TCPConn and a positive period is provided. Other
-// connection types (e.g. unix sockets) are silently ignored.
+// it is a *net.TCPConn, possibly wrapped by a connection such as
+// *tls.Conn that exposes its underlying connection via NetConn.
+// Other connection types (e.g. unix sockets) are silently ignored.
 func applyTCPKeepAlive(conn net.Conn, period time.Duration) {
 	if period <= 0 {
 		return
+	}
+	if wrapped, ok := conn.(interface{ NetConn() net.Conn }); ok {
+		conn = wrapped.NetConn()
 	}
 	tc, ok := conn.(*net.TCPConn)
 	if !ok {

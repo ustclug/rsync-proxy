@@ -68,6 +68,25 @@
   "templating": {
     "list": [
       {
+        "name": "job",
+        "label": "job",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values(rsync_proxy_active_connections, job)",
+        "query": {
+          "query": "label_values(rsync_proxy_active_connections, job)",
+          "refId": "Variable"
+        },
+        "refresh": 1,
+        "multi": false,
+        "includeAll": false,
+        "sort": 1,
+        "hide": 0
+      },
+      {
         "name": "instance",
         "label": "instance",
         "type": "query",
@@ -75,14 +94,10 @@
           "type": "prometheus",
           "uid": "${DS_PROMETHEUS}"
         },
-        "definition": "label_values(rsync_proxy_active_connections, instance)",
+        "definition": "label_values(rsync_proxy_active_connections{job=\"$job\"}, instance)",
         "query": {
-          "query": "label_values(rsync_proxy_active_connections, instance)",
+          "query": "label_values(rsync_proxy_active_connections{job=\"$job\"}, instance)",
           "refId": "Variable"
-        },
-        "current": {
-          "text": "mirror.nju.edu.cn:9528",
-          "value": "mirror.nju.edu.cn:9528"
         },
         "refresh": 1,
         "multi": false,
@@ -169,7 +184,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rsync_proxy_active_connections{job=\"ic\",instance=\"$instance\"})",
+          "expr": "sum(rsync_proxy_active_connections{job=\"$job\",instance=\"$instance\"})",
           "refId": "A"
         }
       ]
@@ -234,7 +249,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rsync_proxy_queued_connections{job=\"ic\",instance=\"$instance\"})",
+          "expr": "sum(rsync_proxy_queued_connections{job=\"$job\",instance=\"$instance\"})",
           "refId": "A"
         }
       ]
@@ -292,7 +307,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(rsync_proxy_accepted_connections_total{job=\"ic\",instance=\"$instance\"}[5m]))",
+          "expr": "sum(rate(rsync_proxy_accepted_connections_total{job=\"$job\",instance=\"$instance\"}[5m]))",
           "refId": "A"
         }
       ]
@@ -350,7 +365,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(rsync_proxy_sent_bytes_total{job=\"ic\",instance=\"$instance\"}[5m]))",
+          "expr": "sum(rate(rsync_proxy_sent_bytes_total{job=\"$job\",instance=\"$instance\"}[5m]))",
           "refId": "A"
         }
       ]
@@ -408,7 +423,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(rsync_proxy_received_bytes_total{job=\"ic\",instance=\"$instance\"}[5m]))",
+          "expr": "sum(rate(rsync_proxy_received_bytes_total{job=\"$job\",instance=\"$instance\"}[5m]))",
           "refId": "A"
         }
       ]
@@ -474,7 +489,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(increase(rsync_proxy_queue_full_rejected_total{job=\"ic\",instance=\"$instance\"}[1h])) + sum(increase(rsync_proxy_upstream_dial_errors_total{job=\"ic\",instance=\"$instance\"}[1h])) + sum(increase(rsync_proxy_unknown_module_requests_total{job=\"ic\",instance=\"$instance\"}[1h]))",
+          "expr": "sum(increase(rsync_proxy_queue_full_rejected_total{job=\"$job\",instance=\"$instance\"}[1h])) + sum(increase(rsync_proxy_upstream_dial_errors_total{job=\"$job\",instance=\"$instance\"}[1h])) + sum(increase(rsync_proxy_unknown_module_requests_total{job=\"$job\",instance=\"$instance\"}[1h]))",
           "refId": "A"
         }
       ]
@@ -532,7 +547,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(rsync_proxy_accepted_connections_total{job=\"ic\",instance=\"$instance\"}[5m]))",
+          "expr": "sum(rate(rsync_proxy_accepted_connections_total{job=\"$job\",instance=\"$instance\"}[5m]))",
           "legendFormat": "accepted",
           "refId": "A"
         },
@@ -541,7 +556,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(rsync_proxy_completed_connections_total{job=\"ic\",instance=\"$instance\"}[5m]))",
+          "expr": "sum(rate(rsync_proxy_completed_connections_total{job=\"$job\",instance=\"$instance\"}[5m]))",
           "legendFormat": "completed",
           "refId": "B"
         },
@@ -550,7 +565,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(rsync_proxy_queue_full_rejected_total{job=\"ic\",instance=\"$instance\"}[5m]))",
+          "expr": "sum(rate(rsync_proxy_queue_full_rejected_total{job=\"$job\",instance=\"$instance\"}[5m]))",
           "legendFormat": "rejected (queue full)",
           "refId": "C"
         },
@@ -559,7 +574,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(rsync_proxy_upstream_dial_errors_total{job=\"ic\",instance=\"$instance\"}[5m]))",
+          "expr": "sum(rate(rsync_proxy_upstream_dial_errors_total{job=\"$job\",instance=\"$instance\"}[5m]))",
           "legendFormat": "upstream dial errors",
           "refId": "D"
         },
@@ -568,7 +583,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(rsync_proxy_unknown_module_requests_total{job=\"ic\",instance=\"$instance\"}[5m]))",
+          "expr": "sum(rate(rsync_proxy_unknown_module_requests_total{job=\"$job\",instance=\"$instance\"}[5m]))",
           "legendFormat": "unknown module",
           "refId": "E"
         }
@@ -627,7 +642,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(rsync_proxy_sent_bytes_total{job=\"ic\",instance=\"$instance\"}[5m]))",
+          "expr": "sum(rate(rsync_proxy_sent_bytes_total{job=\"$job\",instance=\"$instance\"}[5m]))",
           "legendFormat": "egress (sent)",
           "refId": "A"
         },
@@ -636,7 +651,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(rsync_proxy_received_bytes_total{job=\"ic\",instance=\"$instance\"}[5m]))",
+          "expr": "sum(rate(rsync_proxy_received_bytes_total{job=\"$job\",instance=\"$instance\"}[5m]))",
           "legendFormat": "ingress (received)",
           "refId": "B"
         }
@@ -708,7 +723,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "topk(15, sum by (module) (rsync_proxy_active_connections_by_module{job=\"ic\",instance=\"$instance\"}))",
+          "expr": "topk(15, sum by (module) (rsync_proxy_active_connections_by_module{job=\"$job\",instance=\"$instance\"}))",
           "legendFormat": "{{module}}",
           "refId": "A"
         }
@@ -767,7 +782,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (upstream) (rsync_proxy_active_connections_by_module{job=\"ic\",instance=\"$instance\"})",
+          "expr": "sum by (upstream) (rsync_proxy_active_connections_by_module{job=\"$job\",instance=\"$instance\"})",
           "legendFormat": "{{upstream}}",
           "refId": "A"
         }
@@ -984,7 +999,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "rsync_proxy_queued_connections{job=\"ic\",instance=\"$instance\"}",
+          "expr": "rsync_proxy_queued_connections{job=\"$job\",instance=\"$instance\"}",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -994,7 +1009,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "rsync_proxy_queue_active_max{job=\"ic\",instance=\"$instance\"}",
+          "expr": "rsync_proxy_queue_active_max{job=\"$job\",instance=\"$instance\"}",
           "format": "table",
           "instant": true,
           "refId": "B"
@@ -1004,7 +1019,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "rsync_proxy_queue_queued_max{job=\"ic\",instance=\"$instance\"}",
+          "expr": "rsync_proxy_queue_queued_max{job=\"$job\",instance=\"$instance\"}",
           "format": "table",
           "instant": true,
           "refId": "C"
@@ -1014,7 +1029,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "rsync_proxy_queued_connections{job=\"ic\",instance=\"$instance\"} / (rsync_proxy_queue_queued_max{job=\"ic\",instance=\"$instance\"} > 0)",
+          "expr": "rsync_proxy_queued_connections{job=\"$job\",instance=\"$instance\"} / (rsync_proxy_queue_queued_max{job=\"$job\",instance=\"$instance\"} > 0)",
           "format": "table",
           "instant": true,
           "refId": "D"
@@ -1024,7 +1039,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "increase(rsync_proxy_queue_full_rejected_total{job=\"ic\",instance=\"$instance\"}[1h])",
+          "expr": "increase(rsync_proxy_queue_full_rejected_total{job=\"$job\",instance=\"$instance\"}[1h])",
           "format": "table",
           "instant": true,
           "refId": "E"
@@ -1034,7 +1049,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "increase(rsync_proxy_upstream_dial_errors_total{job=\"ic\",instance=\"$instance\"}[1h])",
+          "expr": "increase(rsync_proxy_upstream_dial_errors_total{job=\"$job\",instance=\"$instance\"}[1h])",
           "format": "table",
           "instant": true,
           "refId": "F"
@@ -1152,7 +1167,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "rsync_proxy_queued_connections{job=\"ic\",instance=\"$instance\"}",
+          "expr": "rsync_proxy_queued_connections{job=\"$job\",instance=\"$instance\"}",
           "legendFormat": "{{upstream}}",
           "refId": "A"
         }
@@ -1224,7 +1239,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "topk(15, sum by (module) (rsync_proxy_active_connections_by_module{job=\"ic\",instance=\"$instance\"}))",
+          "expr": "topk(15, sum by (module) (rsync_proxy_active_connections_by_module{job=\"$job\",instance=\"$instance\"}))",
           "legendFormat": "{{module}}",
           "refId": "A"
         }
@@ -1316,7 +1331,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "rsync_proxy_connection_duration_seconds{job=\"ic\",instance=\"$instance\"}",
+          "expr": "rsync_proxy_connection_duration_seconds{job=\"$job\",instance=\"$instance\"}",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -1326,7 +1341,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "rsync_proxy_connection_sent_bytes{job=\"ic\",instance=\"$instance\"}",
+          "expr": "rsync_proxy_connection_sent_bytes{job=\"$job\",instance=\"$instance\"}",
           "format": "table",
           "instant": true,
           "refId": "B"
@@ -1336,7 +1351,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "rsync_proxy_connection_received_bytes{job=\"ic\",instance=\"$instance\"}",
+          "expr": "rsync_proxy_connection_received_bytes{job=\"$job\",instance=\"$instance\"}",
           "format": "table",
           "instant": true,
           "refId": "C"
@@ -1451,7 +1466,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "topk(10, sum by (module) (rate(rsync_proxy_module_completed_connections_total{job=\"ic\",instance=\"$instance\"}[5m])))",
+          "expr": "topk(10, sum by (module) (rate(rsync_proxy_module_completed_connections_total{job=\"$job\",instance=\"$instance\"}[5m])))",
           "legendFormat": "{{module}}",
           "refId": "A"
         }
@@ -1505,7 +1520,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "topk(10, sum by (module) (rate(rsync_proxy_module_sent_bytes_total{job=\"ic\",instance=\"$instance\"}[5m])))",
+          "expr": "topk(10, sum by (module) (rate(rsync_proxy_module_sent_bytes_total{job=\"$job\",instance=\"$instance\"}[5m])))",
           "legendFormat": "{{module}}",
           "refId": "A"
         }
@@ -1559,7 +1574,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "topk(10, sum by (module) (rate(rsync_proxy_module_received_bytes_total{job=\"ic\",instance=\"$instance\"}[5m])))",
+          "expr": "topk(10, sum by (module) (rate(rsync_proxy_module_received_bytes_total{job=\"$job\",instance=\"$instance\"}[5m])))",
           "legendFormat": "{{module}}",
           "refId": "A"
         }
@@ -1631,7 +1646,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(rsync_proxy_queue_full_rejected_total{job=\"ic\",instance=\"$instance\"}[5m]))",
+          "expr": "sum(rate(rsync_proxy_queue_full_rejected_total{job=\"$job\",instance=\"$instance\"}[5m]))",
           "legendFormat": "queue full (rejected)",
           "refId": "A"
         },
@@ -1640,7 +1655,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(rsync_proxy_upstream_dial_errors_total{job=\"ic\",instance=\"$instance\"}[5m]))",
+          "expr": "sum(rate(rsync_proxy_upstream_dial_errors_total{job=\"$job\",instance=\"$instance\"}[5m]))",
           "legendFormat": "upstream dial errors",
           "refId": "B"
         },
@@ -1649,7 +1664,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(rsync_proxy_unknown_module_requests_total{job=\"ic\",instance=\"$instance\"}[5m]))",
+          "expr": "sum(rate(rsync_proxy_unknown_module_requests_total{job=\"$job\",instance=\"$instance\"}[5m]))",
           "legendFormat": "unknown module",
           "refId": "C"
         },
@@ -1658,7 +1673,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(rsync_proxy_per_ip_rejected_total{job=\"ic\",instance=\"$instance\"}[5m]))",
+          "expr": "sum(rate(rsync_proxy_per_ip_rejected_total{job=\"$job\",instance=\"$instance\"}[5m]))",
           "legendFormat": "per-IP cap (rejected)",
           "refId": "D"
         }
@@ -1725,7 +1740,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (upstream) (increase(rsync_proxy_queue_full_rejected_total{job=\"ic\",instance=\"$instance\"}[1h])) > 0",
+          "expr": "sum by (upstream) (increase(rsync_proxy_queue_full_rejected_total{job=\"$job\",instance=\"$instance\"}[1h])) > 0",
           "legendFormat": "{{upstream}} (queue full)",
           "refId": "A"
         },
@@ -1734,7 +1749,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (upstream) (increase(rsync_proxy_upstream_dial_errors_total{job=\"ic\",instance=\"$instance\"}[1h])) > 0",
+          "expr": "sum by (upstream) (increase(rsync_proxy_upstream_dial_errors_total{job=\"$job\",instance=\"$instance\"}[1h])) > 0",
           "legendFormat": "{{upstream}} (dial err)",
           "refId": "B"
         },
@@ -1743,7 +1758,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(increase(rsync_proxy_unknown_module_requests_total{job=\"ic\",instance=\"$instance\"}[1h])) > 0",
+          "expr": "sum(increase(rsync_proxy_unknown_module_requests_total{job=\"$job\",instance=\"$instance\"}[1h])) > 0",
           "legendFormat": "unknown module",
           "refId": "C"
         },
@@ -1752,7 +1767,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (upstream) (increase(rsync_proxy_per_ip_rejected_total{job=\"ic\",instance=\"$instance\"}[1h])) > 0",
+          "expr": "sum by (upstream) (increase(rsync_proxy_per_ip_rejected_total{job=\"$job\",instance=\"$instance\"}[1h])) > 0",
           "legendFormat": "{{upstream}} (per-IP cap)",
           "refId": "D"
         }
@@ -1823,7 +1838,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(rsync_proxy_relay_idle_timeout_terminated_total{job=\"ic\",instance=\"$instance\"}[5m]))",
+          "expr": "sum(rate(rsync_proxy_relay_idle_timeout_terminated_total{job=\"$job\",instance=\"$instance\"}[5m]))",
           "legendFormat": "idle timeout",
           "refId": "A"
         },
@@ -1832,7 +1847,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(rsync_proxy_relay_max_duration_terminated_total{job=\"ic\",instance=\"$instance\"}[5m]))",
+          "expr": "sum(rate(rsync_proxy_relay_max_duration_terminated_total{job=\"$job\",instance=\"$instance\"}[5m]))",
           "legendFormat": "max duration",
           "refId": "B"
         },
@@ -1841,7 +1856,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(rsync_proxy_throughput_floor_terminated_total{job=\"ic\",instance=\"$instance\"}[5m]))",
+          "expr": "sum(rate(rsync_proxy_throughput_floor_terminated_total{job=\"$job\",instance=\"$instance\"}[5m]))",
           "legendFormat": "throughput floor",
           "refId": "C"
         }
@@ -1907,7 +1922,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(increase(rsync_proxy_relay_idle_timeout_terminated_total{job=\"ic\",instance=\"$instance\"}[1h])) + sum(increase(rsync_proxy_relay_max_duration_terminated_total{job=\"ic\",instance=\"$instance\"}[1h])) + sum(increase(rsync_proxy_throughput_floor_terminated_total{job=\"ic\",instance=\"$instance\"}[1h]))",
+          "expr": "sum(increase(rsync_proxy_relay_idle_timeout_terminated_total{job=\"$job\",instance=\"$instance\"}[1h])) + sum(increase(rsync_proxy_relay_max_duration_terminated_total{job=\"$job\",instance=\"$instance\"}[1h])) + sum(increase(rsync_proxy_throughput_floor_terminated_total{job=\"$job\",instance=\"$instance\"}[1h]))",
           "legendFormat": "",
           "refId": "A"
         }
@@ -1968,7 +1983,7 @@
                 "type": "prometheus",
                 "uid": "${DS_PROMETHEUS}"
               },
-              "expr": "go_goroutines{job=\"ic\",instance=\"$instance\"}",
+              "expr": "go_goroutines{job=\"$job\",instance=\"$instance\"}",
               "legendFormat": "goroutines",
               "refId": "A"
             }
@@ -2021,7 +2036,7 @@
                 "type": "prometheus",
                 "uid": "${DS_PROMETHEUS}"
               },
-              "expr": "go_memstats_heap_inuse_bytes{job=\"ic\",instance=\"$instance\"}",
+              "expr": "go_memstats_heap_inuse_bytes{job=\"$job\",instance=\"$instance\"}",
               "legendFormat": "heap inuse",
               "refId": "A"
             },
@@ -2030,7 +2045,7 @@
                 "type": "prometheus",
                 "uid": "${DS_PROMETHEUS}"
               },
-              "expr": "go_memstats_heap_alloc_bytes{job=\"ic\",instance=\"$instance\"}",
+              "expr": "go_memstats_heap_alloc_bytes{job=\"$job\",instance=\"$instance\"}",
               "legendFormat": "heap alloc",
               "refId": "B"
             },
@@ -2039,7 +2054,7 @@
                 "type": "prometheus",
                 "uid": "${DS_PROMETHEUS}"
               },
-              "expr": "process_resident_memory_bytes{job=\"ic\",instance=\"$instance\"}",
+              "expr": "process_resident_memory_bytes{job=\"$job\",instance=\"$instance\"}",
               "legendFormat": "RSS",
               "refId": "C"
             }
@@ -2089,7 +2104,7 @@
                 "type": "prometheus",
                 "uid": "${DS_PROMETHEUS}"
               },
-              "expr": "rate(process_cpu_seconds_total{job=\"ic\",instance=\"$instance\"}[5m])",
+              "expr": "rate(process_cpu_seconds_total{job=\"$job\",instance=\"$instance\"}[5m])",
               "legendFormat": "cpu cores used",
               "refId": "A"
             }
@@ -2142,7 +2157,7 @@
                 "type": "prometheus",
                 "uid": "${DS_PROMETHEUS}"
               },
-              "expr": "process_open_fds{job=\"ic\",instance=\"$instance\"}",
+              "expr": "process_open_fds{job=\"$job\",instance=\"$instance\"}",
               "legendFormat": "open fds",
               "refId": "A"
             },
@@ -2151,7 +2166,7 @@
                 "type": "prometheus",
                 "uid": "${DS_PROMETHEUS}"
               },
-              "expr": "process_max_fds{job=\"ic\",instance=\"$instance\"}",
+              "expr": "process_max_fds{job=\"$job\",instance=\"$instance\"}",
               "legendFormat": "max fds",
               "refId": "B"
             }
@@ -2204,7 +2219,7 @@
                 "type": "prometheus",
                 "uid": "${DS_PROMETHEUS}"
               },
-              "expr": "rate(go_gc_duration_seconds_sum{job=\"ic\",instance=\"$instance\"}[5m]) / clamp_min(rate(go_gc_duration_seconds_count{job=\"ic\",instance=\"$instance\"}[5m]), 1)",
+              "expr": "rate(go_gc_duration_seconds_sum{job=\"$job\",instance=\"$instance\"}[5m]) / clamp_min(rate(go_gc_duration_seconds_count{job=\"$job\",instance=\"$instance\"}[5m]), 1)",
               "legendFormat": "avg pause (5m)",
               "refId": "A"
             },
@@ -2213,7 +2228,7 @@
                 "type": "prometheus",
                 "uid": "${DS_PROMETHEUS}"
               },
-              "expr": "go_gc_duration_seconds{job=\"ic\",instance=\"$instance\",quantile=\"1.0\"}",
+              "expr": "go_gc_duration_seconds{job=\"$job\",instance=\"$instance\",quantile=\"1.0\"}",
               "legendFormat": "max pause",
               "refId": "B"
             }
@@ -2276,7 +2291,7 @@
                 "type": "prometheus",
                 "uid": "${DS_PROMETHEUS}"
               },
-              "expr": "time() - process_start_time_seconds{job=\"ic\",instance=\"$instance\"}",
+              "expr": "time() - process_start_time_seconds{job=\"$job\",instance=\"$instance\"}",
               "refId": "A"
             }
           ]
@@ -2330,7 +2345,7 @@
                 "type": "prometheus",
                 "uid": "${DS_PROMETHEUS}"
               },
-              "expr": "process_start_time_seconds{job=\"ic\",instance=\"$instance\"} * 1000",
+              "expr": "process_start_time_seconds{job=\"$job\",instance=\"$instance\"} * 1000",
               "refId": "A"
             }
           ]
@@ -2394,7 +2409,7 @@
                 "type": "prometheus",
                 "uid": "${DS_PROMETHEUS}"
               },
-              "expr": "changes(process_start_time_seconds{job=\"ic\",instance=\"$instance\"}[24h])",
+              "expr": "changes(process_start_time_seconds{job=\"$job\",instance=\"$instance\"}[24h])",
               "refId": "A"
             }
           ]
@@ -2448,7 +2463,7 @@
                 "type": "prometheus",
                 "uid": "${DS_PROMETHEUS}"
               },
-              "expr": "rate(process_network_transmit_bytes_total{job=\"ic\",instance=\"$instance\"}[5m])",
+              "expr": "rate(process_network_transmit_bytes_total{job=\"$job\",instance=\"$instance\"}[5m])",
               "legendFormat": "socket tx",
               "refId": "A"
             },
@@ -2457,7 +2472,7 @@
                 "type": "prometheus",
                 "uid": "${DS_PROMETHEUS}"
               },
-              "expr": "rate(process_network_receive_bytes_total{job=\"ic\",instance=\"$instance\"}[5m])",
+              "expr": "rate(process_network_receive_bytes_total{job=\"$job\",instance=\"$instance\"}[5m])",
               "legendFormat": "socket rx",
               "refId": "B"
             },
@@ -2466,7 +2481,7 @@
                 "type": "prometheus",
                 "uid": "${DS_PROMETHEUS}"
               },
-              "expr": "rate(rsync_proxy_sent_bytes_total{job=\"ic\",instance=\"$instance\"}[5m])",
+              "expr": "rate(rsync_proxy_sent_bytes_total{job=\"$job\",instance=\"$instance\"}[5m])",
               "legendFormat": "rsync sent",
               "refId": "C"
             },
@@ -2475,7 +2490,7 @@
                 "type": "prometheus",
                 "uid": "${DS_PROMETHEUS}"
               },
-              "expr": "rate(rsync_proxy_received_bytes_total{job=\"ic\",instance=\"$instance\"}[5m])",
+              "expr": "rate(rsync_proxy_received_bytes_total{job=\"$job\",instance=\"$instance\"}[5m])",
               "legendFormat": "rsync received",
               "refId": "D"
             }

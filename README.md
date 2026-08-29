@@ -115,4 +115,4 @@ cp fail2ban/filter.d/* /etc/fail2ban/filter.d/
 
 rsync-proxy 在 `listen_http` 上暴露 Prometheus 格式的 `/metrics` 端点，覆盖连接生命周期、按 module/upstream 的累计流量、排队与失败计数、各类终止原因（idle/max-duration/throughput-floor/per-IP），以及 Go runtime 指标。
 
-仓库 [`grafana/dashboard.json`](grafana/dashboard.json) 提供了一份现成的 Grafana dashboard，对应上述指标。
+仓库 [`contrib/grafana/dashboard.json`](contrib/grafana/dashboard.json) 提供了一份现成的 Grafana dashboard，对应上述指标。

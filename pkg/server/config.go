@@ -74,9 +74,9 @@ type ProxySettings struct {
 	// does not, the proxy closes the connection. The grace period
 	// suppresses the check for the first min_throughput_grace seconds
 	// after the relay starts to avoid killing a slow-start session.
-	// Setting min_throughput_bytes or min_throughput_window to 0 (the
-	// default) disables the floor. min_throughput_grace defaults to
-	// the value of min_throughput_window when 0.
+	// Setting min_throughput_bytes to 0 (the default) disables the
+	// floor. min_throughput_window defaults to 60 seconds when 0, and
+	// min_throughput_grace defaults to the effective window when 0.
 	MinThroughputBytes      int64 `toml:"min_throughput_bytes"`
 	MinThroughputWindowSecs int   `toml:"min_throughput_window"`
 	MinThroughputGraceSecs  int   `toml:"min_throughput_grace"`
