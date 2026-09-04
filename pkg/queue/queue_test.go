@@ -30,3 +30,25 @@ func TestAcquireRejectsWhenQueueIsFull(t *testing.T) {
 	assert.True(t, (<-h2.C).Ok)
 	h2.Release()
 }
+
+func TestSetMaxPromotesQueuedHandles(t *testing.T) {
+	q := New(1, 1)
+
+	h1 := q.Acquire()
+	require.True(t, (<-h1.C).Ok)
+
+	h2 := q.Acquire()
+	require.False(t, (<-h2.C).Ok)
+
+	q.SetMax(2, 1)
+
+	select {
+	case status := <-h2.C:
+		assert.True(t, status.Ok)
+	default:
+		t.Fatal("queued handle was not promoted after capacity increased")
+	}
+
+	h1.Release()
+	h2.Release()
+}

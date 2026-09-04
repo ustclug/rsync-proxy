@@ -71,6 +71,10 @@ func (q *Queue) QueuedLen() int {
 func (q *Queue) SetMax(max, maxQueued int) {
 	q.mu.Lock()
 	q.max, q.maxQueued = max, maxQueued
+	for len(q.queued) > 0 && (len(q.active) < q.max || q.max == 0) {
+		q.popHead()
+	}
+	q.broadcastStatus()
 	q.mu.Unlock()
 }
 
