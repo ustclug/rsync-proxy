@@ -75,6 +75,7 @@ cp fail2ban/filter.d/* /etc/fail2ban/filter.d/
 | `tls_cert_file` | string | — | TLS 证书文件，配 `listen_tls` 使用。reload 时自动重读。 |
 | `tls_key_file` | string | — | TLS 私钥文件。reload 时自动重读。 |
 | `access_log` | string | stdout | 访问日志路径。 |
+| `access_json_log` | string | 空 | JSON Lines 访问日志路径；每个 rsync 连接写入一行 JSON，空值表示禁用。 |
 | `error_log` | string | stderr | 错误日志路径。 |
 | `motd` | string | 空 | 客户端连接成功后展示的一行欢迎信息。 |
 

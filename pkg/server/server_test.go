@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -207,6 +208,98 @@ func TestClientReadTimeout(t *testing.T) {
 
 	expected := strings.Repeat("data\n", 3)
 	r.Equal(expected, string(allData))
+}
+
+func TestAccessJSONLog(t *testing.T) {
+	srv := startServer(t)
+	defer srv.Close()
+
+	logPath := filepath.Join(t.TempDir(), "access.json.log")
+	require.NoError(t, srv.accessJSONLog.SetFile(logPath))
+	defer srv.accessJSONLog.Close()
+
+	fakeRsync := rsync.NewServer(func(conn *rsync.Conn) {
+		defer conn.Close()
+		_, _, err := doServerHandshake(conn, RsyncdServerVersion)
+		require.NoError(t, err)
+		_, err = conn.Write([]byte("data\n"))
+		require.NoError(t, err)
+	})
+	fakeRsync.Start()
+	defer fakeRsync.Close()
+
+	srv.modules = map[string][]Target{
+		"fake": {{Upstream: "u1", Addr: fakeRsync.Listener.Addr().String()}},
+	}
+	srv.upstreamQueues = map[string]*queue.Queue{"u1": queue.New(0, 0)}
+
+	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	require.NoError(t, err)
+	clientEndpoint := rawConn.LocalAddr().String()
+	conn := rsync.NewConn(rawConn)
+	defer conn.Close()
+
+	_, err = doClientHandshake(conn, RsyncdServerVersion, "fake")
+	require.NoError(t, err)
+	data, err := io.ReadAll(conn)
+	require.NoError(t, err)
+	require.Equal(t, "data\n", string(data))
+
+	var record accessJSONRecord
+	require.Eventually(t, func() bool {
+		contents, readErr := os.ReadFile(logPath)
+		return readErr == nil && json.Unmarshal(bytes.TrimSpace(contents), &record) == nil
+	}, time.Second, 10*time.Millisecond)
+
+	assert.Equal(t, "rsync", record.LogType)
+	assert.InDelta(t, float64(time.Now().UnixMilli())/1000, record.Timestamp, 1)
+	assert.Equal(t, clientEndpoint, record.ClientEndpoint)
+	assert.Equal(t, fakeRsync.Listener.Addr().String(), record.ServerEndpoint)
+	assert.Equal(t, "fake", record.Module)
+	assert.Equal(t, "u1", record.Backend)
+	assert.Equal(t, http.StatusOK, record.Status)
+	assert.EqualValues(t, 0, record.BytesReceived)
+	assert.EqualValues(t, len(data), record.BytesSent)
+	assert.GreaterOrEqual(t, record.SessionTime, float64(0))
+	assert.Equal(t, "32.0", record.RsyncVersion)
+	assert.Equal(t, "32.0", record.RsyncdVersion)
+	assert.Empty(t, record.TLSProtocol)
+}
+
+func TestAccessJSONLogModuleList(t *testing.T) {
+	srv := startServer(t)
+	defer srv.Close()
+
+	logPath := filepath.Join(t.TempDir(), "access.json.log")
+	require.NoError(t, srv.accessJSONLog.SetFile(logPath))
+	defer srv.accessJSONLog.Close()
+	srv.modules = map[string][]Target{}
+
+	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	require.NoError(t, err)
+	conn := rsync.NewConn(rawConn)
+	defer conn.Close()
+
+	_, err = doClientHandshake(conn, RsyncdServerVersion, "")
+	require.NoError(t, err)
+	data, err := io.ReadAll(conn)
+	require.NoError(t, err)
+	require.Equal(t, string(RsyncdExit), string(data))
+
+	var record accessJSONRecord
+	require.Eventually(t, func() bool {
+		contents, readErr := os.ReadFile(logPath)
+		return readErr == nil && json.Unmarshal(bytes.TrimSpace(contents), &record) == nil
+	}, time.Second, 10*time.Millisecond)
+
+	assert.Empty(t, record.Module)
+	assert.Empty(t, record.Backend)
+	assert.Empty(t, record.ServerEndpoint)
+	assert.Equal(t, http.StatusOK, record.Status)
+	assert.EqualValues(t, 0, record.BytesReceived)
+	assert.EqualValues(t, len(RsyncdExit), record.BytesSent)
+	assert.Equal(t, "32.0", record.RsyncVersion)
+	assert.Equal(t, "-", record.RsyncdVersion)
 }
 
 // TestRelayIdleTimeoutClosesIdleConnection verifies that when

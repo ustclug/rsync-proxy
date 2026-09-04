@@ -23,14 +23,15 @@ type Upstream struct {
 }
 
 type ProxySettings struct {
-	Listen      string `toml:"listen"`
-	ListenTLS   string `toml:"listen_tls"`
-	ListenHTTP  string `toml:"listen_http"`
-	Motd        string `toml:"motd"`
-	AccessLog   string `toml:"access_log"`
-	ErrorLog    string `toml:"error_log"`
-	TLSCertFile string `toml:"tls_cert_file"`
-	TLSKeyFile  string `toml:"tls_key_file"`
+	Listen        string `toml:"listen"`
+	ListenTLS     string `toml:"listen_tls"`
+	ListenHTTP    string `toml:"listen_http"`
+	Motd          string `toml:"motd"`
+	AccessLog     string `toml:"access_log"`
+	AccessJSONLog string `toml:"access_json_log"`
+	ErrorLog      string `toml:"error_log"`
+	TLSCertFile   string `toml:"tls_cert_file"`
+	TLSKeyFile    string `toml:"tls_key_file"`
 	// RelayIdleTimeoutSecs is the idle timeout (in seconds) applied
 	// during the bidirectional relay phase of a connection. If no data
 	// flows in either direction for this duration, the connection is

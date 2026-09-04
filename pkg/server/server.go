@@ -75,6 +75,22 @@ type connInfoSnapshot struct {
 	ReceivedBytes int64     `json:"receivedBytes"`
 }
 
+type accessJSONRecord struct {
+	LogType        string  `json:"log_type"`
+	Timestamp      float64 `json:"timestamp"`
+	ClientEndpoint string  `json:"client_endpoint"`
+	ServerEndpoint string  `json:"server_endpoint"`
+	Module         string  `json:"module"`
+	Backend        string  `json:"backend"`
+	Status         int     `json:"status"`
+	BytesReceived  int64   `json:"bytes_received"`
+	BytesSent      int64   `json:"bytes_sent"`
+	SessionTime    float64 `json:"session_time"`
+	RsyncVersion   string  `json:"rsync_version"`
+	RsyncdVersion  string  `json:"rsyncd_version"`
+	TLSProtocol    string  `json:"tls_protocol"`
+}
+
 func (c *ConnInfo) SetModule(module string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -205,7 +221,7 @@ type Server struct {
 	Motd string
 	// --- End of options section
 
-	accessLog, errorLog *logging.FileLogger
+	accessLog, accessJSONLog, errorLog *logging.FileLogger
 
 	reloadLock sync.RWMutex
 	dialer     net.Dialer
@@ -268,10 +284,13 @@ func (cr *countingReader) Read(p []byte) (n int, err error) {
 
 func New() *Server {
 	accessLog, _ := logging.NewFileLogger("")
+	accessJSONLog, _ := logging.NewFileLogger("")
+	accessJSONLog.SetFlags(0)
 	errorLog, _ := logging.NewFileLogger("")
 	s := &Server{
 		dialer:         net.Dialer{}, // customize keep alive interval?
 		accessLog:      accessLog,
+		accessJSONLog:  accessJSONLog,
 		errorLog:       errorLog,
 		upstreamQueues: make(map[string]*queue.Queue),
 	}
@@ -389,6 +408,9 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 	}
 	if openLog {
 		if err := s.accessLog.SetFile(c.Proxy.AccessLog); err != nil {
+			return err
+		}
+		if err := s.accessJSONLog.SetFile(c.Proxy.AccessJSONLog); err != nil {
 			return err
 		}
 		if err := s.errorLog.SetFile(c.Proxy.ErrorLog); err != nil {
@@ -758,7 +780,7 @@ func (s *Server) getTLSCertificate(*tls.ClientHelloInfo) (*tls.Certificate, erro
 	return s.tlsCertificate, nil
 }
 
-func (s *Server) listAllModules(downConn net.Conn) error {
+func (s *Server) listAllModules(downConn net.Conn) (int, error) {
 	var buf bytes.Buffer
 	modules := make([]string, 0, len(s.modules))
 
@@ -775,12 +797,12 @@ func (s *Server) listAllModules(downConn net.Conn) error {
 		buf.WriteRune(lineFeed)
 	}
 	buf.Write(RsyncdExit)
-	_, err := writeWithTimeout(downConn, buf.Bytes(), timeout)
-	return err
+	return writeWithTimeout(downConn, buf.Bytes(), timeout)
 }
 
-func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) error {
+func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) (returnErr error) {
 	defer downConn.Close()
+	sessionStartedAt := time.Now()
 
 	info := ConnInfo{
 		Index:       index,
@@ -788,6 +810,30 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 		RemoteAddr:  downConn.RemoteAddr().String(),
 		ConnectedAt: time.Now().Truncate(time.Second),
 	}
+	record := accessJSONRecord{
+		LogType:        "rsync",
+		ClientEndpoint: downConn.RemoteAddr().String(),
+		Status:         http.StatusOK,
+		RsyncVersion:   "-",
+		RsyncdVersion:  "-",
+		TLSProtocol:    tlsProtocolVersion(downConn),
+	}
+	defer func() {
+		now := time.Now()
+		if returnErr != nil && record.Status == http.StatusOK {
+			record.Status = http.StatusInternalServerError
+		}
+		record.Timestamp = float64(now.UnixMilli()) / 1000
+		record.BytesReceived = info.ReceivedBytes.Load()
+		record.BytesSent = info.SentBytes.Load()
+		record.SessionTime = float64(now.Sub(sessionStartedAt).Milliseconds()) / 1000
+		encoded, err := json.Marshal(record)
+		if err != nil {
+			s.errorLog.F("marshal JSON access log: %v", err)
+			return
+		}
+		s.accessJSONLog.Ln(string(encoded))
+	}()
 	s.connInfo.Store(index, &info)
 	defer s.connInfo.Delete(index)
 
@@ -810,6 +856,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	if !bytes.HasPrefix(rsyncdClientVersion, RsyncdVersionPrefix) {
 		return fmt.Errorf("unknown version from client %s: %q", addr, rsyncdClientVersion)
 	}
+	record.RsyncVersion = rsyncProtocolVersion(rsyncdClientVersion)
 
 	_, err = writeWithTimeout(downConn, RsyncdServerVersion, writeTimeout)
 	if err != nil {
@@ -833,11 +880,14 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 
 	if len(data) == 1 { // single '\n'
 		s.accessLog.F("client %s requests listing all modules", addr)
-		return s.listAllModules(downConn)
+		n, err := s.listAllModules(downConn)
+		info.SentBytes.Add(int64(n))
+		return err
 	}
 
 	moduleName := string(buf[:n-1]) // trim trailing \n
 	info.SetModule(moduleName)
+	record.Module = moduleName
 
 	targets, ok := s.getTargetsForModule(moduleName)
 	if !ok {
@@ -849,6 +899,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 		// exit 0, which masked the failure for downstream tools such
 		// as tunasync (which then marked the job as success).
 		s.unknownModuleCount.Add(1)
+		record.Status = http.StatusNotFound
 		_, _ = writeWithTimeout(downConn, fmt.Appendf(nil, "@ERROR: Unknown module '%s'\n", moduleName), writeTimeout)
 		s.accessLog.F("client %s requests non-existing module %s", ip, moduleName)
 		return nil
@@ -858,6 +909,8 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	upstreamAddr := target.Addr
 	useProxyProtocol := target.UseProxyProtocol
 	info.SetUpstream(target.Upstream)
+	record.Backend = target.Upstream
+	record.ServerEndpoint = upstreamAddr
 
 	upstreamQueue, ok := s.getQueueForUpstream(target.Upstream)
 	if !ok {
@@ -874,6 +927,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 		if n := counter.Add(1); n > int64(perIPLimit) {
 			counter.Add(-1)
 			s.getUpstreamCounters(target.Upstream).perIPRejected.Add(1)
+			record.Status = http.StatusTooManyRequests
 			s.accessLog.F("client %s rejected for upstream %s module %s: per-IP cap of %d reached", ip, target.Upstream, moduleName, perIPLimit)
 			_, _ = writeWithTimeout(downConn, fmt.Appendf(nil, "@ERROR: per-IP connection limit of %d for upstream %s reached, retry later\n", perIPLimit, target.Upstream), writeTimeout)
 			return nil
@@ -886,6 +940,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	status := <-handle.C
 	if status.Full {
 		s.getUpstreamCounters(target.Upstream).queueFull.Add(1)
+		record.Status = http.StatusServiceUnavailable
 		s.accessLog.F("client %s queue full for module %s", ip, moduleName)
 		_, _ = writeWithTimeout(downConn, []byte("Server queue is full for this upstream. Please retry later.\n"), writeTimeout)
 		_, _ = writeWithTimeout(downConn, RsyncdExit, writeTimeout)
@@ -922,9 +977,11 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	upConn, err := dialContextTCPOrUnix(ctx, s.getDialer(), upstreamAddr)
 	if err != nil {
 		s.getUpstreamCounters(target.Upstream).dialError.Add(1)
+		record.Status = http.StatusBadGateway
 		return fmt.Errorf("dial to upstream: %s: %w", upstreamAddr, err)
 	}
 	defer upConn.Close()
+	record.ServerEndpoint = upConn.RemoteAddr().String()
 	// Enable TCP keepalive on the upstream-side connection so that a
 	// dead/half-open peer is detected within the configured period
 	// rather than relying on the OS default (commonly ~2 hours, or
@@ -953,6 +1010,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	if !bytes.HasPrefix(data, RsyncdVersionPrefix) {
 		return fmt.Errorf("unknown version from upstream %s: %s", upAddr, data)
 	}
+	record.RsyncdVersion = rsyncProtocolVersion(data)
 
 	// send back the motd
 	idx := bytes.IndexByte(data, lineFeed)
@@ -1151,6 +1209,22 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) err
 	duration := time.Since(info.ConnectedAt)
 	s.accessLog.F("client %s finishes module %s (sent: %d, received: %d, duration: %s)", ip, moduleName, sentBytes, receivedBytes, duration)
 	return nil
+}
+
+func rsyncProtocolVersion(line []byte) string {
+	fields := strings.Fields(strings.TrimPrefix(string(line), string(RsyncdVersionPrefix)))
+	if len(fields) == 0 {
+		return "-"
+	}
+	return fields[0]
+}
+
+func tlsProtocolVersion(conn net.Conn) string {
+	tlsConn, ok := conn.(*tls.Conn)
+	if !ok {
+		return ""
+	}
+	return tls.VersionName(tlsConn.ConnectionState().Version)
 }
 
 func (s *Server) GetActiveConnectionCount() int64 {

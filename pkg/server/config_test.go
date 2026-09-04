@@ -1,6 +1,8 @@
 package server
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +37,26 @@ modules = ["bar2"]
 		"bar2": {{Upstream: "u3", Addr: "example.com:1235", UseProxyProtocol: false}},
 	}
 	assert.Equal(t, expectedMods, s.modules, "wrong modules")
+}
+
+func TestAccessJSONLogConfig(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "access.json.log")
+	s := New()
+	configContent := `
+[proxy]
+access_json_log = "` + logPath + `"
+
+[upstreams.u1]
+address = "127.0.0.1:1234"
+modules = ["foo"]
+`
+	require.NoError(t, s.ReadConfig(strings.NewReader(configContent), true))
+	defer s.accessJSONLog.Close()
+
+	s.accessJSONLog.Ln(`{"configured":true}`)
+	contents, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	assert.Equal(t, "{\"configured\":true}\n", string(contents))
 }
 
 func TestDuplicatedModulesInConfig(t *testing.T) {
