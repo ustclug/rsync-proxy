@@ -118,7 +118,11 @@ func formatSizeColored(size int64) string {
 		}
 	}
 	if remainder > 0 || padRemainder {
-		fmt.Fprintf(&sb, "%06d", remainder)
+		if padRemainder {
+			fmt.Fprintf(&sb, "%06d", remainder)
+		} else {
+			fmt.Fprintf(&sb, "%d", remainder)
+		}
 	}
 	return sb.String()
 }
