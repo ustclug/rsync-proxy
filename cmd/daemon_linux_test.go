@@ -5,6 +5,7 @@ package cmd
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -13,6 +14,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -21,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -432,7 +435,17 @@ func TestDeadGenerationReleasesCapacity(t *testing.T) {
 	require.Contains(t, line, "queued")
 	_, err = br.ReadString('\n')
 	require.NoError(t, err)
-	require.NoError(t, syscall.Kill(f.pid, syscall.SIGKILL))
+	st, err := f.status()
+	require.NoError(t, err)
+	var oldPID int
+	for _, g := range st.Generations {
+		if g.Version == "A" {
+			oldPID = g.PID
+		}
+	}
+	require.NotZero(t, oldPID)
+	require.NotEqual(t, f.pid, oldPID)
+	require.NoError(t, syscall.Kill(oldPID, syscall.SIGKILL))
 	checkEcho(t, b, br)
 }
 
@@ -577,4 +590,154 @@ func TestRealRsyncTransferAcrossUpgrades(t *testing.T) {
 	actual, err := os.ReadFile(filepath.Join(destination, "payload"))
 	require.NoError(t, err)
 	require.Equal(t, data, actual)
+}
+
+func TestSupervisorRestartsCurrentWorker(t *testing.T) {
+	f := newDaemonFixture(t, 1, 0)
+	a, ar := f.connect(false)
+	checkEcho(t, a, ar)
+	before, err := f.status()
+	require.NoError(t, err)
+	require.Len(t, before.Generations, 1)
+	old := before.Generations[0]
+	require.NotEqual(t, f.pid, old.PID)
+	require.NoError(t, syscall.Kill(old.PID, syscall.SIGKILL))
+	require.Eventually(t, func() bool {
+		st, e := f.status()
+		if e != nil {
+			return false
+		}
+		for _, g := range st.Generations {
+			if g.ID != old.ID && g.State == state.Serving {
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, 20*time.Millisecond)
+	b, br := f.connect(false)
+	checkEcho(t, b, br)
+	require.NoError(t, syscall.Kill(f.pid, 0))
+}
+
+func TestSupervisorDeathStopsWorkers(t *testing.T) {
+	f := newDaemonFixture(t, 1, 0)
+	a, ar := f.connect(false)
+	checkEcho(t, a, ar)
+	f.install("B")
+	f.upgrade()
+	b, br := f.connect(false)
+	line, err := br.ReadString('\n')
+	require.NoError(t, err)
+	require.Contains(t, line, "queued")
+	_, err = br.ReadString('\n')
+	require.NoError(t, err)
+	st, err := f.status()
+	require.NoError(t, err)
+	require.NoError(t, syscall.Kill(f.pid, syscall.SIGKILL))
+	for _, c := range []net.Conn{a, b} {
+		require.NoError(t, c.SetReadDeadline(time.Now().Add(5*time.Second)))
+		_, err = c.Read(make([]byte, 1))
+		require.Error(t, err)
+		var ne net.Error
+		if errors.As(err, &ne) {
+			require.False(t, ne.Timeout(), "worker kept connection alive after supervisor died")
+		}
+	}
+	require.Eventually(t, func() bool {
+		for _, g := range st.Generations {
+			locked, e := state.IsLocked(filepath.Join(f.dir, g.ID+".lock"))
+			if e != nil || locked {
+				return false
+			}
+		}
+		return true
+	}, 5*time.Second, 20*time.Millisecond)
+}
+
+func TestSupervisorShutdownDrainsAllWorkers(t *testing.T) {
+	f := newDaemonFixture(t, 0, 0)
+	a, ar := f.connect(false)
+	checkEcho(t, a, ar)
+	f.install("B")
+	f.upgrade()
+	b, br := f.connect(false)
+	checkEcho(t, b, br)
+	st, err := f.status()
+	require.NoError(t, err)
+	require.NoError(t, syscall.Kill(f.pid, syscall.SIGTERM))
+	// A graceful stop must not interrupt either generation's accepted sessions.
+	checkEcho(t, a, ar)
+	checkEcho(t, b, br)
+	require.NoError(t, a.Close())
+	require.NoError(t, b.Close())
+	require.Eventually(t, func() bool {
+		for _, g := range st.Generations {
+			live, e := state.IsLocked(filepath.Join(f.dir, g.ID+".lock"))
+			if e != nil || live {
+				return false
+			}
+		}
+		live, e := state.IsLocked(filepath.Join(f.dir, "startup.lock"))
+		return e == nil && !live
+	}, 5*time.Second, 20*time.Millisecond)
+}
+
+func TestSupervisorDeathDuringWorkerStartup(t *testing.T) {
+	f := newDaemonFixture(t, 0, 0)
+	pidFile := filepath.Join(f.dir, "starting.pid")
+	// This executable never connects to the supervisor or completes handoff.
+	script := fmt.Sprintf("#!/bin/sh\necho $$ > %q\nexec sleep 30\n", pidFile)
+	require.NoError(t, os.WriteFile(f.binary+".new", []byte(script), 0700))
+	require.NoError(t, os.Rename(f.binary+".new", f.binary))
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		_ = sendControl(f.socket, "/upgrade?timeout=10s", 10*time.Second, io.Discard)
+	}()
+	var pid int
+	require.Eventually(t, func() bool {
+		b, e := os.ReadFile(pidFile)
+		if e != nil {
+			return false
+		}
+		pid, e = strconv.Atoi(strings.TrimSpace(string(b)))
+		return e == nil && pid > 0
+	}, 3*time.Second, 10*time.Millisecond)
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	require.NoError(t, syscall.Kill(f.pid, syscall.SIGKILL))
+	require.Eventually(t, func() bool {
+		b, e := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if os.IsNotExist(e) {
+			return true
+		}
+		if e != nil {
+			return false
+		}
+		// A killed orphan can briefly remain a zombie until init reaps it.
+		fields := strings.Fields(string(b))
+		return len(fields) > 2 && fields[2] == "Z"
+	}, 3*time.Second, 10*time.Millisecond)
+	select {
+	case <-finished:
+	case <-time.After(3 * time.Second):
+		t.Fatal("upgrade request did not terminate")
+	}
+}
+
+func TestRetireDoesNotReclaimReusedPID(t *testing.T) {
+	store := state.New()
+	require.NoError(t, store.Register(state.Generation{ID: "old", PID: 42}))
+	require.NoError(t, store.Finish("old"))
+	require.NoError(t, store.Register(state.Generation{ID: "new", PID: 42}))
+	require.NoError(t, store.Activate("new", "", []state.Limit{{Name: "u", Active: 1}}))
+	_, err := store.Acquire(context.Background(), "new", "u", "ip")
+	require.NoError(t, err)
+	p := &supervisor{store: store, dir: t.TempDir()}
+	p.retire(&workerProcess{cmd: &exec.Cmd{Process: &os.Process{Pid: 42}}, id: "old"})
+	q, err := store.Queues()
+	require.NoError(t, err)
+	require.Equal(t, 1, q[0].ActiveCount)
+	gens, err := store.Generations()
+	require.NoError(t, err)
+	require.Equal(t, state.Serving, gens[1].State)
 }

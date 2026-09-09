@@ -14,17 +14,13 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
-
-	"golang.org/x/sys/unix"
 
 	"github.com/ustclug/rsync-proxy/pkg/server"
 	"github.com/ustclug/rsync-proxy/pkg/state"
@@ -46,7 +42,7 @@ type daemon struct {
 	ready           atomic.Bool
 	s               *server.Server
 	store           *state.Store
-	id, dir, binary string
+	id, dir         string
 	mu              sync.Mutex // serializes reload and upgrade through the commit point
 	private         *http.Server
 	privateListener net.Listener
@@ -55,11 +51,12 @@ type daemon struct {
 	done            chan struct{}
 	backgroundDone  chan struct{}
 	drainOnce       sync.Once
+	drainMu         sync.Mutex
 	drainTimer      *time.Timer
 	stopAdmission   func()
 }
 
-func runDaemon(s *server.Server) error {
+func runWorker(s *server.Server) error {
 	dir := s.StateDir
 	if dir == "" {
 		dir = "/run/rsync-proxy"
@@ -72,25 +69,16 @@ func runDaemon(s *server.Server) error {
 	if err = os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	startup, err := state.Lock(filepath.Join(dir, "startup.lock"))
-	if err != nil {
-		return fmt.Errorf("another startup is in progress: %w", err)
-	}
-	defer startup.Close()
 	store, err := state.Open(dir)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
-	binary, err := os.Executable()
-	if err != nil {
-		return err
-	}
 	idBytes := make([]byte, 12)
 	if _, err = rand.Read(idBytes); err != nil {
 		return err
 	}
-	d := &daemon{s: s, store: store, dir: dir, id: hex.EncodeToString(idBytes), binary: binary, runResult: make(chan error, 1), done: make(chan struct{}), backgroundDone: make(chan struct{})}
+	d := &daemon{s: s, store: store, dir: dir, id: hex.EncodeToString(idBytes), runResult: make(chan error, 1), done: make(chan struct{}), backgroundDone: make(chan struct{})}
 	var parent net.Conn
 	var decoder *json.Decoder
 	var hello handoffMessage
@@ -113,27 +101,9 @@ func runDaemon(s *server.Server) error {
 			return errors.New("incompatible handoff protocol or state_dir")
 		}
 	} else {
-		gens, err := store.Generations()
-		if err != nil {
-			return err
-		}
-		for _, g := range gens {
-			live, err := state.IsLocked(filepath.Join(dir, g.ID+".lock"))
-			if err != nil {
-				return err
-			}
-			if live {
-				return fmt.Errorf("generation %s is still running; use upgrade", g.ID)
-			}
-		}
-		if err = store.Reset(); err != nil {
-			return err
-		}
-		for _, g := range gens {
-			_ = os.Remove(filepath.Join(dir, g.ID+".lock"))
-			_ = os.Remove(g.Control)
-		}
+		return errors.New("worker requires supervisor handoff")
 	}
+
 	d.lock, err = state.Lock(filepath.Join(dir, d.id+".lock"))
 	if err != nil {
 		return err
@@ -151,11 +121,7 @@ func runDaemon(s *server.Server) error {
 	if err = store.Register(state.Generation{ID: d.id, PID: os.Getpid(), Version: Version, Control: control}); err != nil {
 		return err
 	}
-	defer func() {
-		if err := store.Finish(d.id); err != nil {
-			log.Printf("[ERROR] retire generation: %v", err)
-		}
-	}()
+
 	s.Generation = d.id
 	// Configuration was loaded before attaching the store: a prospective child
 	// must not publish new limits until the parent authorizes the commit.
@@ -190,7 +156,11 @@ func runDaemon(s *server.Server) error {
 			return
 		}
 		if r.URL.Path == "/internal/stop" {
-			d.beginDrain(0)
+			timeout, err := time.ParseDuration(r.URL.Query().Get("timeout"))
+			if err != nil {
+				timeout = 0
+			}
+			d.beginDrain(timeout)
 			return
 		}
 		if !d.control(w, r) {
@@ -237,25 +207,21 @@ func runDaemon(s *server.Server) error {
 	if err = s.PublishSnapshot(); err != nil {
 		return err
 	}
-	if parent == nil {
-		if err = notifySystemd("READY=1\nMAINPID=" + strconv.Itoa(os.Getpid())); err != nil {
-			return err
-		}
-	} else {
-		if err = json.NewEncoder(parent).Encode(handoffMessage{Stage: "active", ID: d.id}); err != nil {
-			return err
-		}
-		// Keep the parent alive until it has transferred systemd ownership.
-		var ack handoffMessage
-		if err = decoder.Decode(&ack); err != nil {
-			return err
-		}
-		if ack.Stage != "owned" {
-			return errors.New("missing ownership acknowledgement")
-		}
+	if err = json.NewEncoder(parent).Encode(handoffMessage{Stage: "active", ID: d.id}); err != nil {
+		return err
 	}
-	_ = startup.Close()
+	var ack handoffMessage
+	if err = decoder.Decode(&ack); err != nil {
+		return err
+	}
+	if ack.Stage != "owned" {
+		return errors.New("missing supervisor acknowledgement")
+	}
+
 	d.ready.Store(true)
+	if err = json.NewEncoder(parent).Encode(handoffMessage{Stage: "serving", ID: d.id}); err != nil {
+		return err
+	}
 	go d.background()
 	defer func() { close(d.done); <-d.backgroundDone }()
 	signals := make(chan os.Signal, 2)
@@ -264,20 +230,30 @@ func runDaemon(s *server.Server) error {
 	var runErr error
 	select {
 	case runErr = <-d.runResult:
+	case <-store.Done():
+		s.Close()
+		<-d.runResult
+		runErr = errors.New("supervisor connection lost")
 	case <-signals:
-		d.stopAll()
+		d.beginDrain(0)
 		select {
 		case runErr = <-d.runResult:
+		case <-store.Done():
+			s.Close()
+			<-d.runResult
+			runErr = errors.New("supervisor connection lost while draining")
 		case <-signals:
 			s.AbortConnections()
 			runErr = <-d.runResult
 		}
 	}
 	runFinished = true
+	d.drainMu.Lock()
 	if d.drainTimer != nil {
 		d.drainTimer.Stop()
 	}
-	// Finish HTTP handlers before closing their database/log dependencies.
+	d.drainMu.Unlock()
+	// Finish HTTP handlers before closing their supervisor/log dependencies.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if s.HTTPServer != nil {
@@ -286,19 +262,14 @@ func runDaemon(s *server.Server) error {
 	if err = s.PublishSnapshot(); err != nil {
 		log.Printf("[ERROR] final snapshot: %v", err)
 	}
-	current, _ := store.Current()
-	if current == d.id {
-		for _, addr := range s.ConfiguredListeners() {
-			if strings.HasPrefix(addr, "/") {
-				_ = os.Remove(addr)
-			}
-		}
-	}
+
 	return runErr
 }
 
 func (d *daemon) beginDrain(timeout time.Duration) {
 	d.drainOnce.Do(func() {
+		d.drainMu.Lock()
+		defer d.drainMu.Unlock()
 		var deadline time.Time
 		if timeout > 0 {
 			deadline = time.Now().Add(timeout)
@@ -324,40 +295,8 @@ func (d *daemon) background() {
 			if err := d.s.PublishSnapshot(); err != nil {
 				log.Printf("[ERROR] publish snapshot: %v", err)
 			}
-			gens, err := d.store.Generations()
-			if err != nil {
-				continue
-			}
-			for _, g := range gens {
-				if g.ID == d.id || g.State == state.Exited {
-					continue
-				}
-				live, err := state.IsLocked(filepath.Join(d.dir, g.ID+".lock"))
-				if err == nil && !live {
-					if err := d.store.Finish(g.ID); err != nil {
-						log.Printf("[ERROR] reclaim generation: %v", err)
-					}
-				}
-			}
 		}
 	}
-}
-
-func (d *daemon) stopAll() {
-	current, err := d.store.Current()
-	if err == nil && current == d.id {
-		gens, err := d.store.Generations()
-		if err == nil {
-			for _, g := range gens {
-				if g.ID != d.id && g.State != state.Exited {
-					if err := privatePost(g.Control, "/internal/stop"); err != nil {
-						log.Printf("[ERROR] stop generation %s: %v", g.ID, err)
-					}
-				}
-			}
-		}
-	}
-	d.beginDrain(0)
 }
 
 func privatePost(addr, path string) error {
@@ -456,137 +395,11 @@ func (d *daemon) control(w http.ResponseWriter, r *http.Request) bool {
 				return true
 			}
 		}
-		if err := d.upgrade(timeout); err != nil {
+		if err := d.store.Upgrade(d.id, timeout); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		} else {
 			_, _ = fmt.Fprintln(w, `{"message":"Upgrade completed"}`)
 		}
 	}
 	return true
-}
-
-func (d *daemon) upgrade(timeout time.Duration) (resultErr error) {
-	files, err := d.s.ListenerFiles()
-	if err != nil {
-		return err
-	}
-	defer func() {
-		for _, f := range files {
-			_ = f.Close()
-		}
-	}()
-	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
-	if err != nil {
-		return err
-	}
-	pf := os.NewFile(uintptr(pair[0]), "parent")
-	childFile := os.NewFile(uintptr(pair[1]), "child")
-	defer childFile.Close()
-	conn, err := net.FileConn(pf)
-	_ = pf.Close()
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(timeout))
-	env := make([]string, 0, len(os.Environ())+1)
-	for _, v := range os.Environ() {
-		if !strings.HasPrefix(v, handoffEnv+"=") {
-			env = append(env, v)
-		}
-	}
-	env = append(env, handoffEnv+"="+strconv.Itoa(state.Protocol))
-	child := &exec.Cmd{Path: d.binary, Args: append([]string{d.binary}, os.Args[1:]...), Env: env, ExtraFiles: append([]*os.File{childFile}, files...), Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr}
-	if err = child.Start(); err != nil {
-		return err
-	}
-	_ = childFile.Close()
-	wait := make(chan error, 1)
-	go func() { wait <- child.Wait() }()
-	success := false
-	defer func() {
-		if success {
-			return
-		}
-		_ = child.Process.Kill()
-		<-wait
-		// The old listeners have not been closed. Restore admission policy if
-		// the child failed after committing but before acknowledging ownership.
-		current, e := d.store.Current()
-		if e == nil && current != d.id {
-			if e = d.store.Activate(d.id, current, d.s.Limits()); e != nil {
-				log.Printf("[ERROR] restore serving generation: %v", e)
-			}
-		}
-		_ = notifySystemd("MAINPID=" + strconv.Itoa(os.Getpid()))
-	}()
-	enc := json.NewEncoder(conn)
-	dec := json.NewDecoder(conn)
-	if err = enc.Encode(handoffMessage{Protocol: state.Protocol, Parent: d.id, StateDir: d.dir, Listeners: d.s.ConfiguredListeners()}); err != nil {
-		return err
-	}
-	var ready handoffMessage
-	if err = dec.Decode(&ready); err != nil {
-		return fmt.Errorf("new generation did not become ready: %w", err)
-	}
-	if ready.Stage != "ready" {
-		return errors.New("invalid readiness acknowledgement")
-	}
-	if err = enc.Encode(handoffMessage{Stage: "commit"}); err != nil {
-		return err
-	}
-	var active handoffMessage
-	if err = dec.Decode(&active); err != nil {
-		return fmt.Errorf("new generation failed to activate: %w", err)
-	}
-	if active.Stage != "active" || active.ID != ready.ID {
-		return errors.New("invalid activation acknowledgement")
-	}
-	if err = notifySystemd("MAINPID=" + strconv.Itoa(child.Process.Pid)); err != nil {
-		return fmt.Errorf("transfer systemd ownership: %w", err)
-	}
-	if err = enc.Encode(handoffMessage{Stage: "owned"}); err != nil {
-		return err
-	}
-	success = true
-	d.beginDrain(ready.DrainTimeout)
-	log.Printf("[INFO] upgraded %s to %s (pid %d)", d.id, ready.ID, child.Process.Pid)
-	return nil
-}
-
-// A barrier makes ownership changes visible to PID 1 before the old main
-// process is allowed to exit. Only the current main process sends MAINPID.
-func notifySystemd(message string) error {
-	path := os.Getenv("NOTIFY_SOCKET")
-	if path == "" {
-		return nil
-	}
-	fd, err := unix.Socket(unix.AF_UNIX, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
-	if err != nil {
-		return err
-	}
-	defer unix.Close(fd)
-	addr := &unix.SockaddrUnix{Name: path}
-	if err = unix.Sendto(fd, []byte(message), 0, addr); err != nil {
-		return err
-	}
-	r, w, err := os.Pipe()
-	if err != nil {
-		return err
-	}
-	defer r.Close()
-	defer w.Close()
-	if err = unix.Sendmsg(fd, []byte("BARRIER=1"), unix.UnixRights(int(w.Fd())), addr, 0); err != nil {
-		return err
-	}
-	_ = w.Close()
-	if err = r.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
-		return err
-	}
-	var b [1]byte
-	_, err = r.Read(b[:])
-	if errors.Is(err, io.EOF) {
-		return nil
-	}
-	return err
 }

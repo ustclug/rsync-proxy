@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"sync"
-	"time"
 
 	"github.com/ustclug/rsync-proxy/pkg/queue"
 	"github.com/ustclug/rsync-proxy/pkg/state"
@@ -36,31 +35,48 @@ type admissionWait struct {
 }
 
 type admission struct {
-	s        *Server
-	mu       sync.Mutex
-	waiting  map[int64]*admissionWait
-	releases map[int64]bool
-	done     chan struct{}
+	s       *Server
+	mu      sync.Mutex
+	waiting map[int64]*admissionWait
+	wake    chan struct{}
+	done    chan struct{}
 }
 
 func (s *Server) StartAdmission() func() {
-	a := &admission{s: s, waiting: make(map[int64]*admissionWait), releases: make(map[int64]bool), done: make(chan struct{})}
+	a := &admission{s: s, waiting: make(map[int64]*admissionWait), done: make(chan struct{}), wake: make(chan struct{}, 1)}
 	s.admission = a
 	ctx, cancel := context.WithCancel(context.Background())
+	events := make(chan struct{}, 1)
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		var revision uint64
+		for {
+			next, err := s.Shared.Watch(ctx, revision)
+			if err != nil {
+				return
+			}
+			revision = next
+			select {
+			case events <- struct{}{}:
+			default:
+			}
+		}
+	}()
 	go func() {
 		defer close(a.done)
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
+			case <-events:
+				a.poll()
+			case <-a.wake:
 				a.poll()
 			}
 		}
 	}()
-	return func() { cancel(); <-a.done }
+	return func() { cancel(); <-watchDone; <-a.done }
 }
 
 func offerStatus(c chan queue.Status, status queue.Status) {
@@ -73,15 +89,8 @@ func offerStatus(c chan queue.Status, status queue.Status) {
 
 func (a *admission) poll() {
 	a.mu.Lock()
-	ids := make([]int64, 0, len(a.releases))
-	for id := range a.releases {
-		ids = append(ids, id)
-	}
 	hasWaiting := len(a.waiting) > 0
 	a.mu.Unlock()
-	for _, id := range ids {
-		a.release(id)
-	}
 	if !hasWaiting {
 		return
 	}
@@ -112,16 +121,10 @@ func (a *admission) release(id int64) {
 	a.mu.Lock()
 	delete(a.waiting, id)
 	a.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	err := a.s.Shared.Release(ctx, a.s.Generation, id)
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if err != nil {
-		a.releases[id] = true
-		log.Printf("[ERROR] release admission (will retry): %v", err)
-	} else {
-		delete(a.releases, id)
+	if err := a.s.Shared.Release(context.Background(), a.s.Generation, id); err != nil {
+		// Transport failure closes Shared.Done. The worker then exits, and the
+		// supervisor reclaims its remaining tickets only after reaping it.
+		log.Printf("[ERROR] release admission: %v", err)
 	}
 }
 
@@ -152,6 +155,12 @@ func (s *Server) acquire(ctx context.Context, upstream, ip string, q *queue.Queu
 	}
 	c <- queue.Status{Ok: t.Active, Index: t.Index, Max: t.Queued}
 	a.mu.Unlock()
+	if !t.Active {
+		select {
+		case a.wake <- struct{}{}:
+		default:
+		}
+	}
 	var once sync.Once
 	return admissionHandle{c: c, release: func() { once.Do(func() { a.release(t.ID) }) }}, nil
 }

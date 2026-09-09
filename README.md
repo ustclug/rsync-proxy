@@ -67,17 +67,19 @@ sudo /usr/bin/rsync-proxy --config=/etc/rsync-proxy/config.toml upgrade --timeou
 
 `upgrade` 等待新进程就绪并完成监听交接后返回，不等待旧连接结束。已有明文/TLS 传输、握手和排队连接留在原进程；新连接由新进程接收。可以在旧连接未结束时继续升级，形成多代共存。`reload` 仍然只重读配置；`systemctl restart` 是普通重启，不是零停机更新入口。
 
-- `[proxy].state_dir` 默认为 `/run/rsync-proxy`，保存各代共享的 SQLite 运行状态。手动运行时须使用可写目录，各实例须使用独立目录；不要放在 NFS 等网络文件系统上，也不要在进程运行期间删除数据库、WAL 或锁文件。
+- `[proxy].state_dir` 默认为 `/run/rsync-proxy`，保存 supervisor 的 Unix socket 和进程锁文件。全局限额、FIFO 队列和各代快照保存在 supervisor 内存中，不使用数据库。手动运行时须使用可写目录，各实例须使用独立目录；不要在进程运行期间删除 socket 或锁文件。
 - `[proxy].upgrade_drain_timeout` 单位为秒，默认 `0`。非零值从该代停止接收新连接时起计算，到期关闭剩余连接，包括握手和排队。采用本次成功升级的新配置值；后续更新不会改变或重置更早各代的期限。默认不增加期限，原有 idle/max-duration/throughput 规则继续生效。
 - 所有代合计执行上游并发、排队和单 IP 限额，排队按全局 FIFO 晋升。调低限额不会主动断开已有连接；等待占用降到新限额以下再放行。旧连接继续使用已经选定的上游目标。
-- 热更新要求 `listen`、`listen_tls`、`listen_http` 和状态目录保持一致。新程序、配置、证书或协议不兼容，或就绪超过 `--timeout`，会报告失败并保留旧进程。数据库不可用时不绕过配额放行，已建立的传输继续运行。
-- `connections`、`/status` 和 `/metrics` 汇总各代，逐连接数据新增 `generation` 标识；Go/runtime 指标属于当前主进程。跨代快照每秒发布，正常退出前发布最终值，业务累计指标保留已退出代的贡献；异常退出可能损失最后一次未发布的统计。一次完全停止后的启动会重置运行状态。
-- 使用配套 systemd unit，使主 PID 在升级后指向新进程；需要支持 `sd_notify` barrier 的 systemd（246 或更新版本）。普通停止仍受 systemd 的停止超时约束。旧进程仍有连接时会继续占用内存和 FD，可通过退出期限限制。
+- 热更新要求 `listen`、`listen_tls`、`listen_http` 和状态目录保持一致。新程序、配置、证书或协议不兼容，或就绪超过 `--timeout`，会报告失败并保留旧进程。准入操作不做磁盘写入，队列变化通过 IPC 通知 worker。
+- `connections`、`/status` 和 `/metrics` 汇总各代，逐连接数据新增 `generation` 标识；Go/runtime 指标属于当前接收连接的 worker。跨代快照每秒发布，正常退出前发布最终值，业务累计指标保留已退出代的贡献；异常退出可能损失最后一次未发布的统计。一次完全停止后的启动会重置运行状态。
+- 使用配套 systemd unit，主 PID 始终是 supervisor。supervisor 保留监听 FD，通过 Unix socket 协调 worker；`upgrade` 启动安装路径上的新 worker，并让旧 worker 排空连接。普通停止仍受 systemd 的停止超时约束。旧 worker 仍有连接时会继续占用内存和 FD，可通过退出期限限制。
+- supervisor 确认 worker 退出后回收其额度；当前 worker 意外退出时，会从安装路径启动替代 worker。supervisor 或控制连接异常失效时，worker 停止接收并关闭连接，不会另建空状态继续放行。
+- `upgrade` 更新 worker，不替换常驻 supervisor；修改 supervisor 实现或 IPC 协议后，需要普通重启才能应用这部分更新。不兼容的 worker 会被拒绝，旧 worker 继续服务。
 - 日志轮转使用 `rsync-proxy --config=... reopen-logs`，让所有存活的代重新打开日志。升级与日志重开命令读取配置中的管理地址，显式 `--host` 可覆盖。
 
-**首次从不支持该协议的旧版迁入需要一次普通重启。** deb 升级会对正在运行的服务调用 `upgrade`，失败不会自动强制重启；首次迁入或不兼容升级时，检查错误后手动 `systemctl restart rsync-proxy`，再完成包配置。进程崩溃、主机重启、主动停止和配置的连接超时不属于零停机保证。
+**首次从不支持 supervisor 协议的旧版（包括 SQLite 版本）迁入需要一次普通重启。** deb 升级会对正在运行的服务调用 `upgrade`，失败不会自动强制重启；首次迁入或不兼容升级时，检查错误后手动 `systemctl restart rsync-proxy`，再完成包配置。进程崩溃、主机重启、主动停止和配置的连接超时不属于零停机保证。
 
-开发验证：`go test -race ./...` 包含真实子进程的多代交接、SQLite 并发调度及故障测试。真实用户级 systemd 验证可运行 `python3 test/systemd/upgrade.py --binary /absolute/path/to/rsync-proxy`；该脚本只创建临时测试 unit、回环监听和临时目录。
+开发验证：`go test -race ./...` 包含真实子进程的多代交接、supervisor IPC 并发调度及故障测试。真实用户级 systemd 验证可运行 `python3 test/systemd/upgrade.py --binary /absolute/path/to/rsync-proxy`；该脚本只创建临时测试 unit、回环监听和临时目录。
 
 ### 安装 fail2ban filter
 

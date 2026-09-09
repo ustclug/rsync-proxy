@@ -356,10 +356,6 @@ func New() *cobra.Command {
 			}
 
 			log.SetOutput(cmd.ErrOrStderr())
-			if err := s.ReadConfigFromFile(true); err != nil {
-				return fmt.Errorf("load config: %w", err)
-			}
-
 			return runDaemon(s)
 		},
 		SilenceUsage: true,

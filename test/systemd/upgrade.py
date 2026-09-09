@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise MAINPID handoff using an isolated user-level systemd service."""
+"""Exercise worker upgrades with a stable supervisor MAINPID using an isolated user-level systemd service."""
 
 import argparse
 import contextlib
@@ -94,8 +94,8 @@ def main():
         try:
             subprocess.run(
                 ["systemd-run", "--user", f"--unit={unit}", "--collect",
-                 "--property=Type=notify", "--property=NotifyAccess=all",
-                 "--property=KillMode=control-group", "--property=TimeoutStopSec=5s",
+                 "--property=Type=notify", "--property=NotifyAccess=main",
+                 "--property=KillMode=mixed", "--property=TimeoutStopSec=5s",
                  str(binary), "--config", str(config)],
                 check=True,
             )
@@ -107,7 +107,7 @@ def main():
                     control(control_socket, "POST", "/upgrade?timeout=30s")
                 assert property_value(unit, "ActiveState") == "active"
                 pid = property_value(unit, "MainPID")
-                assert pid != "0" and pid not in pids, pids
+                assert pid != "0" and (not pids or pid == pids[0]), pids
                 pids.append(pid)
                 connection = socket.socket(socket.AF_UNIX)
                 connection.settimeout(5)
@@ -143,7 +143,28 @@ def main():
             assert property_value(unit, "MainPID") == pids[-1]
             assert property_value(unit, "ActiveState") == "active"
             assert rsync_socket.exists() and control_socket.exists()
-            print(f"PASS: MAINPID {' -> '.join(pids)}; all streams survived; old generations exited")
+            # TERM goes only to the supervisor, which drains its workers.
+            # Sending TERM to the whole cgroup as well would deliver it twice.
+            connection = socket.socket(socket.AF_UNIX)
+            connection.settimeout(5)
+            connection.connect(str(rsync_socket))
+            connections.append(connection)
+            reader = connection.makefile("rb")
+            readers.append(reader)
+            connection.sendall(b"@RSYNCD: 32.0\n")
+            assert reader.readline().startswith(b"@RSYNCD:")
+            connection.sendall(b"foo\n")
+            assert reader.readline() == b"READY\n"
+            subprocess.run(["systemctl", "--user", "stop", "--no-block", unit], check=True)
+            deadline = time.monotonic() + 3
+            while property_value(unit, "ActiveState") != "deactivating":
+                assert time.monotonic() < deadline
+                time.sleep(0.02)
+            connection.sendall(b"still draining\n")
+            assert reader.readline() == b"still draining\n"
+            reader.close()
+            connection.close()
+            print(f"PASS: supervisor MAINPID {pids[0]} stayed fixed; all streams survived; old workers exited; stop drained connections")
         finally:
             for reader in readers:
                 reader.close()

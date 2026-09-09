@@ -6,8 +6,8 @@ StartLimitIntervalSec=10s
 
 [Service]
 Type=notify
-NotifyAccess=all
-KillMode=control-group
+NotifyAccess=main
+KillMode=mixed
 Restart=on-failure
 
 ExecStart=/usr/bin/rsync-proxy --config=/etc/rsync-proxy/config.toml

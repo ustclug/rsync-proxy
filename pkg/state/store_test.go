@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/rpc"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +17,22 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
+
+func startTestCoordinator(t *testing.T, dir string) *Store {
+	t.Helper()
+	owner := New()
+	stop, err := Serve(dir, owner, nil)
+	require.NoError(t, err)
+	t.Cleanup(stop)
+	return owner
+}
+
+func newTestStore(t *testing.T, id string) *Store {
+	t.Helper()
+	dir := t.TempDir()
+	startTestCoordinator(t, dir)
+	return openTestStore(t, dir, id)
+}
 
 func openTestStore(t *testing.T, dir, id string) *Store {
 	t.Helper()
@@ -27,6 +45,7 @@ func openTestStore(t *testing.T, dir, id string) *Store {
 
 func TestGlobalFIFOAndPolicy(t *testing.T) {
 	dir := t.TempDir()
+	owner := startTestCoordinator(t, dir)
 	a := openTestStore(t, dir, "a")
 	b := openTestStore(t, dir, "b")
 	ctx := context.Background()
@@ -54,7 +73,7 @@ func TestGlobalFIFOAndPolicy(t *testing.T) {
 	at, err := a.Poll("a")
 	require.NoError(t, err)
 	require.False(t, at[three.ID].Active)
-	require.NoError(t, b.Finish("b"))
+	require.NoError(t, owner.Finish("b"))
 	at, err = a.Poll("a")
 	require.NoError(t, err)
 	require.True(t, at[three.ID].Active)
@@ -63,7 +82,7 @@ func TestGlobalFIFOAndPolicy(t *testing.T) {
 }
 
 func TestLowerLimitAndUnlimitedQueue(t *testing.T) {
-	s := openTestStore(t, t.TempDir(), "a")
+	s := newTestStore(t, "a")
 	ctx := context.Background()
 	require.NoError(t, s.Activate("a", "", []Limit{{Name: "u", Active: 2}}))
 	one, err := s.Acquire(ctx, "a", "u", "ip")
@@ -88,29 +107,54 @@ func TestLowerLimitAndUnlimitedQueue(t *testing.T) {
 	require.Equal(t, 49, q[0].QueuedCount)
 }
 
-func TestSchemaRejectionAndBusy(t *testing.T) {
+func TestProtocolRejectionAndCancellation(t *testing.T) {
 	dir := t.TempDir()
+	startTestCoordinator(t, dir)
+	conn, err := net.Dial("unix", filepath.Join(dir, "supervisor.sock"))
+	require.NoError(t, err)
+	client := rpc.NewClient(conn)
+	defer client.Close()
+	var response Response
+	require.NoError(t, client.Call("Coordinator.Call", Request{Protocol: 999, Op: "hello"}, &response))
+	require.Contains(t, response.Error, "incompatible supervisor protocol")
 	s := openTestStore(t, dir, "a")
-	_, err := s.db.Exec("PRAGMA user_version=999")
-	require.NoError(t, err)
-	_, err = Open(dir)
-	require.ErrorContains(t, err, "incompatible state schema")
-	_, err = s.db.Exec("PRAGMA user_version=1")
-	require.NoError(t, err)
-	b := openTestStore(t, dir, "b")
 	require.NoError(t, s.Activate("a", "", []Limit{{Name: "u", Active: 1}}))
-	c, err := s.db.Conn(context.Background())
-	require.NoError(t, err)
-	_, err = c.ExecContext(context.Background(), "BEGIN IMMEDIATE")
-	require.NoError(t, err)
-	_, err = b.Acquire(context.Background(), "b", "u", "ip")
-	require.Error(t, err)
-	_, err = c.ExecContext(context.Background(), "ROLLBACK")
-	require.NoError(t, err)
-	require.NoError(t, c.Close())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = s.Acquire(ctx, "a", "u", "ip")
+	require.ErrorIs(t, err, context.Canceled)
 	q, err := s.Queues()
 	require.NoError(t, err)
 	require.Zero(t, q[0].ActiveCount)
+}
+
+func TestDisconnectDoesNotReleaseLiveWorkers(t *testing.T) {
+	dir := t.TempDir()
+	owner := startTestCoordinator(t, dir)
+	a := openTestStore(t, dir, "a")
+	b := openTestStore(t, dir, "b")
+	require.NoError(t, a.Activate("a", "", []Limit{{Name: "u", Active: 1}}))
+	_, err := a.Acquire(context.Background(), "a", "u", "ip")
+	require.NoError(t, err)
+	queued, err := b.Acquire(context.Background(), "b", "u", "other")
+	require.NoError(t, err)
+	require.False(t, queued.Active)
+	require.NoError(t, a.Close())
+	q, err := b.Queues()
+	require.NoError(t, err)
+	require.Equal(t, 1, q[0].ActiveCount)
+	require.Equal(t, 1, q[0].QueuedCount)
+	rev, err := owner.Watch(context.Background(), 0)
+	require.NoError(t, err)
+	changed := make(chan uint64, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	go func() { next, _ := b.Watch(ctx, rev); changed <- next }()
+	require.NoError(t, owner.Finish("a"))
+	require.Greater(t, <-changed, rev)
+	tickets, err := b.Poll("b")
+	require.NoError(t, err)
+	require.True(t, tickets[queued.ID].Active)
 }
 
 func TestStateWorker(t *testing.T) {
@@ -159,6 +203,7 @@ func TestStateWorker(t *testing.T) {
 
 func TestConcurrentProcessAdmission(t *testing.T) {
 	dir := t.TempDir()
+	startTestCoordinator(t, dir)
 	s := openTestStore(t, dir, "parent")
 	require.NoError(t, s.Activate("parent", "", []Limit{{Name: "u", Active: 2, Queued: 20, PerIP: 2}}))
 	executable, err := os.Executable()
@@ -213,7 +258,7 @@ func TestConcurrentProcessAdmission(t *testing.T) {
 }
 
 func TestAdmissionAt100ConnectionsPerSecond(t *testing.T) {
-	s := openTestStore(t, t.TempDir(), "a")
+	s := newTestStore(t, "a")
 	require.NoError(t, s.Activate("a", "", []Limit{{Name: "u", Active: 10, Queued: 100}}))
 	latencies := make([]time.Duration, 0, 200)
 	ticker := time.NewTicker(10 * time.Millisecond)
@@ -232,6 +277,7 @@ func TestAdmissionAt100ConnectionsPerSecond(t *testing.T) {
 
 func TestQueueBurst(t *testing.T) {
 	dir := t.TempDir()
+	startTestCoordinator(t, dir)
 	s := openTestStore(t, dir, "a")
 	_ = openTestStore(t, dir, "b")
 	ctx := context.Background()

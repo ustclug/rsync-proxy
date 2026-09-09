@@ -11,7 +11,7 @@ error_log = "/var/log/rsync-proxy/error.log"
 tls_cert_file = "/etc/rsync-proxy/tls/server.crt"
 tls_key_file = "/etc/rsync-proxy/tls/server.key"
 
-# Shared runtime state for all process generations (Linux).
+# Supervisor Unix socket and process lock directory (Linux).
 # Use a local directory writable by the service user, never NFS.
 #state_dir = "/run/rsync-proxy"
 

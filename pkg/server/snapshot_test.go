@@ -13,8 +13,7 @@ import (
 )
 
 func TestAggregateRetainsCountersWithoutRetiredGauges(t *testing.T) {
-	store, err := state.Open(t.TempDir())
-	require.NoError(t, err)
+	store := state.New()
 	defer store.Close()
 	makeGeneration := func(id string) *Server {
 		s := New()
