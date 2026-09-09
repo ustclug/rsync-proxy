@@ -40,11 +40,15 @@ if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-decon
 		deb-systemd-helper update-state rsync-proxy.service >/dev/null || true
 	fi
 
-	# Restart only if it was already started
+	# Upgrade only a running service. Never turn a failed handoff into a
+	# disruptive restart; pre-handoff versions need one manual restart.
 	if [ -d /run/systemd/system ]; then
 		systemctl --system daemon-reload >/dev/null || true
-		if [ -n "$2" ]; then
-			deb-systemd-invoke try-restart rsync-proxy.service >/dev/null || true
+		if [ -n "$2" ] && systemctl --system is-active --quiet rsync-proxy.service; then
+			if ! /usr/bin/rsync-proxy --config=/etc/rsync-proxy/config.toml upgrade; then
+				echo "rsync-proxy: hot upgrade failed; the existing process was retained. Versions without handoff support need one manual systemctl restart rsync-proxy." >&2
+				exit 1
+			fi
 		fi
 	fi
 fi

@@ -116,3 +116,26 @@ func TestListenAndDialUnixSocket(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, info.String(), netAddrToString(info))
 }
+
+func TestUnixListenerDoesNotReplaceLiveSocket(t *testing.T) {
+	addr := filepath.Join(t.TempDir(), "live.sock")
+	first, err := listenTCPOrUnix(addr)
+	require.NoError(t, err)
+	defer first.Close()
+	_, err = listenTCPOrUnix(addr)
+	require.Error(t, err)
+	conn, err := net.Dial("unix", addr)
+	require.NoError(t, err)
+	defer conn.Close()
+}
+
+func TestUnixListenerReclaimsStaleSocket(t *testing.T) {
+	addr := filepath.Join(t.TempDir(), "stale.sock")
+	first, err := net.Listen("unix", addr)
+	require.NoError(t, err)
+	first.(*net.UnixListener).SetUnlinkOnClose(false)
+	require.NoError(t, first.Close())
+	second, err := listenTCPOrUnix(addr)
+	require.NoError(t, err)
+	defer second.Close()
+}

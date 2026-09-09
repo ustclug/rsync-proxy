@@ -142,6 +142,7 @@ func SendConnectionsRequest(addr string, stdout, stderr io.Writer) error {
 	var result struct {
 		Connections []struct {
 			Index         int       `json:"index"`
+			Generation    string    `json:"generation"`
 			RemoteAddr    string    `json:"remote"`
 			Module        string    `json:"module"`
 			Upstream      string    `json:"upstream"`
@@ -176,6 +177,7 @@ func SendConnectionsRequest(addr string, stdout, stderr io.Writer) error {
 		}),
 		tablewriter.WithHeaderAutoFormat(tw.Off),
 		tablewriter.WithAlignment(tw.Alignment{
+			tw.AlignDefault, // Generation
 			tw.AlignRight,   // Index
 			tw.AlignRight,   // RemoteAddr
 			tw.AlignDefault, // Module
@@ -185,9 +187,10 @@ func SendConnectionsRequest(addr string, stdout, stderr io.Writer) error {
 			tw.AlignRight,   // SentBytes
 		}),
 	)
-	table.Header("Index", "Remote", "Module", "Upstream", "Connected", "Received", "Sent")
+	table.Header("Generation", "Index", "Remote", "Module", "Upstream", "Connected", "Received", "Sent")
 	for _, conn := range result.Connections {
 		_ = table.Append([]string{
+			conn.Generation,
 			strconv.Itoa(conn.Index),
 			conn.RemoteAddr,
 			conn.Module,
@@ -357,10 +360,7 @@ func New() *cobra.Command {
 				return fmt.Errorf("load config: %w", err)
 			}
 
-			if err := s.Listen(); err != nil {
-				return fmt.Errorf("server listen: %w", err)
-			}
-			return s.Run()
+			return runDaemon(s)
 		},
 		SilenceUsage: true,
 	}
@@ -372,6 +372,8 @@ func New() *cobra.Command {
 	c.AddCommand(
 		newConnectionsCmd(),
 		newReloadCmd(),
+		newUpgradeCmd(s),
+		newReopenLogsCmd(s),
 		newUpstreamModulesCmd(s),
 		newVersionCmd(),
 	)

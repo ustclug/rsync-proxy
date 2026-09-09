@@ -55,6 +55,30 @@ systemctl enable --now rsync-proxy.service
 cp logrotate.conf /etc/logrotate.d/
 ```
 
+### 零停机更新（Linux）
+
+运行中的版本具备升级协议后，可以先原子替换安装路径上的二进制，再执行：
+
+```shell
+sudo install -m 0755 rsync-proxy.new /usr/bin/rsync-proxy.next
+sudo mv /usr/bin/rsync-proxy.next /usr/bin/rsync-proxy
+sudo /usr/bin/rsync-proxy --config=/etc/rsync-proxy/config.toml upgrade --timeout=30s
+```
+
+`upgrade` 等待新进程就绪并完成监听交接后返回，不等待旧连接结束。已有明文/TLS 传输、握手和排队连接留在原进程；新连接由新进程接收。可以在旧连接未结束时继续升级，形成多代共存。`reload` 仍然只重读配置；`systemctl restart` 是普通重启，不是零停机更新入口。
+
+- `[proxy].state_dir` 默认为 `/run/rsync-proxy`，保存各代共享的 SQLite 运行状态。手动运行时须使用可写目录，各实例须使用独立目录；不要放在 NFS 等网络文件系统上，也不要在进程运行期间删除数据库、WAL 或锁文件。
+- `[proxy].upgrade_drain_timeout` 单位为秒，默认 `0`。非零值从该代停止接收新连接时起计算，到期关闭剩余连接，包括握手和排队。采用本次成功升级的新配置值；后续更新不会改变或重置更早各代的期限。默认不增加期限，原有 idle/max-duration/throughput 规则继续生效。
+- 所有代合计执行上游并发、排队和单 IP 限额，排队按全局 FIFO 晋升。调低限额不会主动断开已有连接；等待占用降到新限额以下再放行。旧连接继续使用已经选定的上游目标。
+- 热更新要求 `listen`、`listen_tls`、`listen_http` 和状态目录保持一致。新程序、配置、证书或协议不兼容，或就绪超过 `--timeout`，会报告失败并保留旧进程。数据库不可用时不绕过配额放行，已建立的传输继续运行。
+- `connections`、`/status` 和 `/metrics` 汇总各代，逐连接数据新增 `generation` 标识；Go/runtime 指标属于当前主进程。跨代快照每秒发布，正常退出前发布最终值，业务累计指标保留已退出代的贡献；异常退出可能损失最后一次未发布的统计。一次完全停止后的启动会重置运行状态。
+- 使用配套 systemd unit，使主 PID 在升级后指向新进程；需要支持 `sd_notify` barrier 的 systemd（246 或更新版本）。普通停止仍受 systemd 的停止超时约束。旧进程仍有连接时会继续占用内存和 FD，可通过退出期限限制。
+- 日志轮转使用 `rsync-proxy --config=... reopen-logs`，让所有存活的代重新打开日志。升级与日志重开命令读取配置中的管理地址，显式 `--host` 可覆盖。
+
+**首次从不支持该协议的旧版迁入需要一次普通重启。** deb 升级会对正在运行的服务调用 `upgrade`，失败不会自动强制重启；首次迁入或不兼容升级时，检查错误后手动 `systemctl restart rsync-proxy`，再完成包配置。进程崩溃、主机重启、主动停止和配置的连接超时不属于零停机保证。
+
+开发验证：`go test -race ./...` 包含真实子进程的多代交接、SQLite 并发调度及故障测试。真实用户级 systemd 验证可运行 `python3 test/systemd/upgrade.py --binary /absolute/path/to/rsync-proxy`；该脚本只创建临时测试 unit、回环监听和临时目录。
+
 ### 安装 fail2ban filter
 
 ```shell
@@ -90,7 +114,7 @@ cp fail2ban/filter.d/* /etc/fail2ban/filter.d/
 | `relay_idle_timeout` | int 秒 | 0 | relay 阶段双向无 I/O 多久后关闭连接。语义同 rsyncd `timeout`。 | `600` |
 | `relay_max_duration` | int 秒 | 0 | relay 阶段总时长上限。超时关闭，rsync 客户端通常会重连续传。 | `14400`（4h） |
 | `tcp_keepalive` | int 秒 | 0 | 客户端连接和上游连接的 TCP keepalive 周期，0 沿用 OS 默认（通常 ~2h）。 | `120` |
-| `per_ip_max_active_connections` | int | 0 | 单 IP 对单上游最多并发 relay 连接数，proxy-wide 默认值。NAT/校园出口 IP 时取值需放宽。 | `4` |
+| `per_ip_max_active_connections` | int | 0 | 单 IP 对单上游最多同时持有的连接数（含排队），proxy-wide 默认值。NAT/校园出口 IP 时取值需放宽。 | `4` |
 | `dial_timeout` | int 秒 | 0 | 拨号上游的超时；0 沿用内核 SYN 重试（~75s）。 | `5`（LAN） |
 | `min_throughput_bytes` | int64 字节 | 0 | relay 阶段最近 `min_throughput_window` 秒内累计收发须 ≥ 此值，否则视作慢速吸血并关闭。0 关闭整组检查。 | `1048576` |
 | `min_throughput_window` | int 秒 | 60 | 上述滑动窗口长度。 | `60` |
@@ -109,7 +133,7 @@ cp fail2ban/filter.d/* /etc/fail2ban/filter.d/
 | `discover_modules` | bool | false | 启动/reload 时自动从上游拉 module 列表。上游不可达会导致启动失败。与 `modules` 二选一。 |
 | `use_proxy_protocol` | bool | false | 与上游通信时附加 PROXY protocol 头，便于上游记录真实客户端 IP。需上游 rsyncd 启用 PROXY protocol 支持。 |
 | `max_active_connections` | int | 0 | 该上游最大并发 relay 连接数，0 表示不限制。 |
-| `max_queued_connections` | int | 0 | 达到上限后排队的最大长度，0 表示不排队。 |
+| `max_queued_connections` | int | 0 | 达到上限后排队的最大长度，0 表示不限排队长度。 |
 | `per_ip_max_active_connections` | int | 0 | 覆盖 `[proxy]` 中的同名值；0 表示继承 proxy-wide 默认。 |
 
 # 监控

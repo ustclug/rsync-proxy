@@ -1248,7 +1248,7 @@
     {
       "id": 16,
       "title": "Live Connections (per-connection snapshot)",
-      "description": "One row per currently-active connection. Bytes are cumulative for the session and reset when the connection ends or rsync-proxy restarts.",
+      "description": "One row per currently-active connection, keyed by generation and index across hot upgrades. Bytes are cumulative for the session.",
       "type": "table",
       "gridPos": {
         "h": 9,
@@ -1331,7 +1331,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "rsync_proxy_connection_duration_seconds{job=\"$job\",instance=\"$instance\"}",
+          "expr": "label_join(rsync_proxy_connection_duration_seconds{job=\"$job\",instance=\"$instance\"}, \"connection\", \":\", \"generation\", \"index\")",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -1341,7 +1341,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "rsync_proxy_connection_sent_bytes{job=\"$job\",instance=\"$instance\"}",
+          "expr": "label_join(rsync_proxy_connection_sent_bytes{job=\"$job\",instance=\"$instance\"}, \"connection\", \":\", \"generation\", \"index\")",
           "format": "table",
           "instant": true,
           "refId": "B"
@@ -1351,7 +1351,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "rsync_proxy_connection_received_bytes{job=\"$job\",instance=\"$instance\"}",
+          "expr": "label_join(rsync_proxy_connection_received_bytes{job=\"$job\",instance=\"$instance\"}, \"connection\", \":\", \"generation\", \"index\")",
           "format": "table",
           "instant": true,
           "refId": "C"
@@ -1361,7 +1361,7 @@
         {
           "id": "joinByField",
           "options": {
-            "byField": "index",
+            "byField": "connection",
             "mode": "outer"
           }
         },
@@ -1369,6 +1369,12 @@
           "id": "organize",
           "options": {
             "excludeByName": {
+              "index 1": true,
+              "index 2": true,
+              "index 3": true,
+              "generation 1": true,
+              "generation 2": true,
+              "generation 3": true,
               "Time 1": true,
               "Time 2": true,
               "Time 3": true,
@@ -1387,7 +1393,7 @@
               "upstream 3": true
             },
             "indexByName": {
-              "index": 0,
+              "connection": 0,
               "module 1": 1,
               "upstream 1": 2,
               "Value #A": 3,

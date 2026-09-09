@@ -2,10 +2,13 @@
 Description=Rsync Proxy
 After=network.target
 ConditionPathExists=/etc/rsync-proxy/config.toml
+StartLimitIntervalSec=10s
 
 [Service]
+Type=notify
+NotifyAccess=all
+KillMode=control-group
 Restart=on-failure
-StartLimitInterval=10s
 
 ExecStart=/usr/bin/rsync-proxy --config=/etc/rsync-proxy/config.toml
 ExecReload=/usr/bin/rsync-proxy --config=/etc/rsync-proxy/config.toml reload

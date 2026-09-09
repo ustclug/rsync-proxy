@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/ustclug/rsync-proxy/pkg/logging"
 	"github.com/ustclug/rsync-proxy/pkg/queue"
+	"github.com/ustclug/rsync-proxy/pkg/state"
 )
 
 const (
@@ -55,6 +57,7 @@ const lineFeed = '\n'
 type ConnInfo struct {
 	mu            sync.RWMutex
 	Index         uint32
+	Generation    string
 	LocalAddr     string
 	RemoteAddr    string
 	ConnectedAt   time.Time
@@ -66,6 +69,7 @@ type ConnInfo struct {
 
 type connInfoSnapshot struct {
 	Index         uint32    `json:"index"`
+	Generation    string    `json:"generation,omitempty"`
 	LocalAddr     string    `json:"local"`
 	RemoteAddr    string    `json:"remote"`
 	ConnectedAt   time.Time `json:"connected"`
@@ -108,6 +112,7 @@ func (c *ConnInfo) snapshot() connInfoSnapshot {
 	defer c.mu.RUnlock()
 	return connInfoSnapshot{
 		Index:         c.Index,
+		Generation:    c.Generation,
 		LocalAddr:     c.LocalAddr,
 		RemoteAddr:    c.RemoteAddr,
 		ConnectedAt:   c.ConnectedAt,
@@ -176,12 +181,31 @@ type moduleCounters struct {
 }
 
 type Server struct {
+	Started chan struct{}
 	// --- Options section
 	// Listen Address
-	ListenAddr     string
-	TLSListenAddr  string
-	HTTPListenAddr string
-	ConfigPath     string
+	ListenAddr          string
+	TLSListenAddr       string
+	HTTPListenAddr      string
+	ConfigPath          string
+	StateDir            string
+	UpgradeDrainTimeout time.Duration
+	Generation          string
+	Shared              *state.Store
+	// ControlHandler handles daemon lifecycle requests before the normal API.
+	ControlHandler      func(http.ResponseWriter, *http.Request) bool
+	listenFactory       func(string) (net.Listener, error)
+	rawTLSListener      net.Listener
+	configuredListeners [3]string
+	lifecycleMu         sync.Mutex
+	forceClosed         bool
+	acceptWG            sync.WaitGroup
+	sessions            map[net.Conn]context.CancelFunc
+	sessionsWG          sync.WaitGroup
+	stopOnce            sync.Once
+	stopC               chan struct{}
+	admission           *admission
+	HTTPServer          *http.Server
 
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
@@ -288,11 +312,14 @@ func New() *Server {
 	accessJSONLog.SetFlags(0)
 	errorLog, _ := logging.NewFileLogger("")
 	s := &Server{
+		Started:        make(chan struct{}),
 		dialer:         net.Dialer{}, // customize keep alive interval?
 		accessLog:      accessLog,
 		accessJSONLog:  accessJSONLog,
 		errorLog:       errorLog,
 		upstreamQueues: make(map[string]*queue.Queue),
+		sessions:       make(map[net.Conn]context.CancelFunc),
+		stopC:          make(chan struct{}),
 	}
 	return s
 }
@@ -301,6 +328,19 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 	var tlsCertificate *tls.Certificate
 	serverStarted := s.TCPListener != nil || s.HTTPListener != nil || s.TLSListener != nil
 
+	if c.Proxy.UpgradeDrainTimeoutSecs < 0 || c.Proxy.RelayIdleTimeoutSecs < 0 {
+		return fmt.Errorf("timeouts must be non-negative")
+	}
+	if c.Proxy.StateDir != "" {
+		var err error
+		c.Proxy.StateDir, err = filepath.Abs(c.Proxy.StateDir)
+		if err != nil {
+			return err
+		}
+	}
+	if serverStarted && c.Proxy.StateDir != "" && c.Proxy.StateDir != s.StateDir {
+		return fmt.Errorf("state_dir cannot change on reload")
+	}
 	if len(c.Upstreams) == 0 {
 		return fmt.Errorf("no upstream found")
 	}
@@ -360,6 +400,9 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 		if len(v.Modules) == 0 && !v.DiscoverModules {
 			return fmt.Errorf("upstream=%s must set modules or discover_modules", upstreamName)
 		}
+		if v.MaxActiveConns < 0 || v.MaxQueuedConns < 0 {
+			return fmt.Errorf("upstream=%s: connection limits must be non-negative", upstreamName)
+		}
 		if v.PerIPMaxActiveConns < 0 {
 			return fmt.Errorf("upstream=%s: per_ip_max_active_connections must be non-negative, got %d", upstreamName, v.PerIPMaxActiveConns)
 		}
@@ -417,10 +460,17 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 			return err
 		}
 	}
-	s.Motd = c.Proxy.Motd
-	if c.Proxy.RelayIdleTimeoutSecs < 0 {
-		return fmt.Errorf("relay_idle_timeout must be non-negative, got %d", c.Proxy.RelayIdleTimeoutSecs)
+	if s.Shared != nil {
+		if err := s.Shared.SetLimits(s.Generation, sharedLimits(resolvedUpstreams)); err != nil {
+			return err
+		}
 	}
+	if !serverStarted {
+		s.configuredListeners = [3]string{c.Proxy.Listen, c.Proxy.ListenTLS, c.Proxy.ListenHTTP}
+		s.StateDir = c.Proxy.StateDir
+	}
+	s.UpgradeDrainTimeout = time.Duration(c.Proxy.UpgradeDrainTimeoutSecs) * time.Second
+	s.Motd = c.Proxy.Motd
 	s.RelayIdleTimeout = time.Duration(c.Proxy.RelayIdleTimeoutSecs) * time.Second
 	s.RelayMaxDuration = time.Duration(c.Proxy.RelayMaxDurationSecs) * time.Second
 	s.TCPKeepAlive = time.Duration(c.Proxy.TCPKeepAliveSecs) * time.Second
@@ -806,6 +856,7 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) (re
 
 	info := ConnInfo{
 		Index:       index,
+		Generation:  s.Generation,
 		LocalAddr:   downConn.LocalAddr().String(),
 		RemoteAddr:  downConn.RemoteAddr().String(),
 		ConnectedAt: time.Now().Truncate(time.Second),
@@ -917,27 +968,24 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) (re
 		return fmt.Errorf("no queue configured for upstream %s", target.Upstream)
 	}
 
-	// Per-IP per-upstream concurrency cap. A positive cap means the
-	// same client IP may not have more than N simultaneous active
-	// relay connections to this upstream. Counted before queue
-	// admission so the cap also bounds queueing, preventing a single
-	// IP from monopolizing both the active slots and the queue.
-	if perIPLimit := s.getPerIPLimitForUpstream(target.Upstream); perIPLimit > 0 {
-		counter := s.getPerIPCounter(target.Upstream, ip)
-		if n := counter.Add(1); n > int64(perIPLimit) {
-			counter.Add(-1)
-			s.getUpstreamCounters(target.Upstream).perIPRejected.Add(1)
-			record.Status = http.StatusTooManyRequests
-			s.accessLog.F("client %s rejected for upstream %s module %s: per-IP cap of %d reached", ip, target.Upstream, moduleName, perIPLimit)
-			_, _ = writeWithTimeout(downConn, fmt.Appendf(nil, "@ERROR: per-IP connection limit of %d for upstream %s reached, retry later\n", perIPLimit, target.Upstream), writeTimeout)
-			return nil
-		}
-		defer counter.Add(-1)
+	handle, err := s.acquire(ctx, target.Upstream, ip, upstreamQueue)
+	if errors.Is(err, state.ErrPerIP) {
+		s.getUpstreamCounters(target.Upstream).perIPRejected.Add(1)
+		record.Status = http.StatusTooManyRequests
+		s.accessLog.F("client %s rejected for upstream %s module %s: %v", ip, target.Upstream, moduleName, err)
+		_, _ = writeWithTimeout(downConn, fmt.Appendf(nil, "@ERROR: per-IP connection limit for upstream %s reached, retry later\n", target.Upstream), writeTimeout)
+		return nil
 	}
-
-	handle := upstreamQueue.Acquire()
-	defer handle.Release()
-	status := <-handle.C
+	if err != nil {
+		return fmt.Errorf("admit connection: %w", err)
+	}
+	defer handle.release()
+	var status queue.Status
+	select {
+	case status = <-handle.c:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	if status.Full {
 		s.getUpstreamCounters(target.Upstream).queueFull.Add(1)
 		record.Status = http.StatusServiceUnavailable
@@ -959,7 +1007,9 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) (re
 	queuing:
 		for !status.Ok {
 			select {
-			case status = <-handle.C:
+			case <-ctx.Done():
+				return ctx.Err()
+			case status = <-handle.c:
 				if status.Ok {
 					break queuing
 				}
@@ -981,6 +1031,8 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) (re
 		return fmt.Errorf("dial to upstream: %s: %w", upstreamAddr, err)
 	}
 	defer upConn.Close()
+	stopUpstream := context.AfterFunc(ctx, func() { _ = upConn.Close() })
+	defer stopUpstream()
 	record.ServerEndpoint = upConn.RemoteAddr().String()
 	// Enable TCP keepalive on the upstream-side connection so that a
 	// dead/half-open peer is detected within the configured period
@@ -1325,13 +1377,12 @@ func (s *Server) runHTTPServer() error {
 			return
 		}
 
-		var status struct {
-			Count       int         `json:"count"`
-			Connections []*ConnInfo `json:"connections"`
+		status, err := s.Status()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
 		}
-		status.Connections = s.ListConnectionInfo()
-		status.Count = len(status.Connections)
-		_ = json.NewEncoder(w).Encode(&status)
+		_ = json.NewEncoder(w).Encode(status)
 	})
 
 	mux.HandleFunc("/telegraf", func(w http.ResponseWriter, r *http.Request) {
@@ -1342,6 +1393,14 @@ func (s *Server) runHTTPServer() error {
 
 		timestamp := time.Now().Truncate(time.Second).UnixNano()
 		count := s.GetActiveConnectionCount()
+		if s.Shared != nil {
+			status, err := s.Status()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			count = int64(status.Count)
+		}
 		// https://docs.influxdata.com/influxdb/latest/reference/syntax/line-protocol/
 		_, _ = fmt.Fprintf(w, "rsync-proxy,host=%s count=%d %d\n", hostname, count, timestamp)
 	})
@@ -1352,20 +1411,46 @@ func (s *Server) runHTTPServer() error {
 			return
 		}
 
-		// promhttp.HandlerFor sets the Content-Type itself based on
-		// content negotiation; do not pre-set it here.
-		// EnableOpenMetrics is disabled so that no "# EOF" terminator is
-		// emitted, allowing us to append our own legacy text-format
-		// metrics after the runtime/process metrics.
+		var metrics bytes.Buffer
+		if s.Shared != nil {
+			if err := s.AggregateMetrics(&metrics); err != nil {
+				http.Error(w, err.Error(), http.StatusServiceUnavailable)
+				return
+			}
+		} else {
+			s.writePrometheusMetrics(&metrics, time.Now())
+		}
 		promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{DisableCompression: true, EnableOpenMetrics: false}).ServeHTTP(w, r)
-		s.writePrometheusMetrics(w, time.Now())
+		_, _ = w.Write(metrics.Bytes())
 	})
 
-	return http.Serve(s.HTTPListener, &mux)
+	s.HTTPServer = &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.ControlHandler != nil && s.ControlHandler(w, r) {
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})}
+	close(s.Started)
+	return s.HTTPServer.Serve(s.HTTPListener)
 }
 
 func (s *Server) Listen() error {
-	l1, err := listenTCPOrUnix(s.ListenAddr)
+	baseListen := s.listenFactory
+	if baseListen == nil {
+		baseListen = listenTCPOrUnix
+	}
+	listen := func(addr string) (net.Listener, error) {
+		l, err := baseListen(addr)
+		// A shared listener's path belongs to the serving daemon, not an individual
+		// generation. Set this before starting Accept/Close goroutines.
+		if s.Shared != nil {
+			if u, ok := l.(*net.UnixListener); ok {
+				u.SetUnlinkOnClose(false)
+			}
+		}
+		return l, err
+	}
+	l1, err := listen(s.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("create tcp listener: %w", err)
 	}
@@ -1374,17 +1459,18 @@ func (s *Server) Listen() error {
 
 	var lTLS net.Listener
 	if s.TLSListenAddr != "" {
-		lTLS, err = listenTCPOrUnix(s.TLSListenAddr)
+		lTLS, err = listen(s.TLSListenAddr)
 		if err != nil {
 			_ = l1.Close()
 			return fmt.Errorf("create tls listener: %w", err)
 		}
 		s.TLSListenAddr = lTLS.Addr().String()
 		log.Printf("[INFO] Rsync TLS proxy listening on %s", s.TLSListenAddr)
+		s.rawTLSListener = lTLS
 		lTLS = tls.NewListener(lTLS, &tls.Config{GetCertificate: s.getTLSCertificate})
 	}
 
-	l2, err := listenTCPOrUnix(s.HTTPListenAddr)
+	l2, err := listen(s.HTTPListenAddr)
 	if err != nil {
 		_ = l1.Close()
 		if lTLS != nil {
@@ -1401,20 +1487,32 @@ func (s *Server) Listen() error {
 	return nil
 }
 
-func (s *Server) Close() {
-	if s.TCPListener != nil {
-		_ = s.TCPListener.Close()
-	}
-	if s.TLSListener != nil {
-		_ = s.TLSListener.Close()
-	}
-	if s.HTTPListener != nil {
-		_ = s.HTTPListener.Close()
+// StopAccepting starts a drain without cancelling accepted sessions.
+func (s *Server) StopAccepting() {
+	s.stopOnce.Do(func() {
+		for _, l := range []net.Listener{s.TCPListener, s.TLSListener, s.HTTPListener} {
+			if l != nil {
+				_ = l.Close()
+			}
+		}
+		close(s.stopC)
+	})
+}
+
+// Close stops admission and aborts all accepted sessions, including queue waits.
+func (s *Server) Close() { s.StopAccepting(); s.AbortConnections() }
+
+func (s *Server) AbortConnections() {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	s.forceClosed = true
+	for conn, cancel := range s.sessions {
+		cancel()
+		_ = conn.Close()
 	}
 }
 
 func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
-	s.activeConnCount.Add(1)
 	defer s.activeConnCount.Add(-1)
 	s.acceptedConnCount.Add(1)
 	connIndex := s.connIndex.Add(1)
@@ -1442,21 +1540,42 @@ func (s *Server) runRsyncServer(ctx context.Context, listener net.Listener, acce
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
+			if errors.Is(err, net.ErrClosed) || errors.Is(err, http.ErrServerClosed) {
 				return nil
 			}
 			return fmt.Errorf("%s: %w", acceptErr, err)
 		}
-		go s.handleConn(ctx, conn)
+		s.lifecycleMu.Lock()
+		if s.forceClosed {
+			s.lifecycleMu.Unlock()
+			_ = conn.Close()
+			continue
+		}
+		connCtx, cancel := context.WithCancel(ctx)
+		s.sessions[conn] = cancel
+		s.sessionsWG.Add(1)
+		s.activeConnCount.Add(1)
+		s.lifecycleMu.Unlock()
+		go func() {
+			defer s.sessionsWG.Done()
+			defer func() {
+				cancel()
+				_ = conn.Close()
+				s.lifecycleMu.Lock()
+				delete(s.sessions, conn)
+				s.lifecycleMu.Unlock()
+			}()
+			s.handleConn(connCtx, conn)
+		}()
 	}
 }
 
 func (s *Server) Run() error {
-	errC := make(chan error, 1)
+	errC := make(chan error, 3)
 	go func() {
 		err := s.runHTTPServer()
 		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
+			if errors.Is(err, net.ErrClosed) || errors.Is(err, http.ErrServerClosed) {
 				return
 			}
 			errC <- fmt.Errorf("start http server: %w", err)
@@ -1465,14 +1584,18 @@ func (s *Server) Run() error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	s.acceptWG.Add(1)
 	go func() {
+		defer s.acceptWG.Done()
 		err := s.runRsyncServer(ctx, s.TCPListener, "accept rsync connection")
 		if err != nil {
 			errC <- err
 		}
 	}()
 	if s.TLSListener != nil {
+		s.acceptWG.Add(1)
 		go func() {
+			defer s.acceptWG.Done()
 			err := s.runRsyncServer(ctx, s.TLSListener, "accept tls rsync connection")
 			if err != nil {
 				errC <- err
@@ -1480,10 +1603,15 @@ func (s *Server) Run() error {
 		}()
 	}
 
-	for {
-		err := <-errC
-		if err != nil {
-			return err
-		}
+	select {
+	case err := <-errC:
+		s.Close()
+		s.acceptWG.Wait()
+		s.sessionsWG.Wait()
+		return err
+	case <-s.stopC:
+		s.acceptWG.Wait()
+		s.sessionsWG.Wait()
+		return nil
 	}
 }

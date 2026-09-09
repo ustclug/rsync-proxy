@@ -2,10 +2,12 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -91,13 +93,35 @@ func readLine(conn net.Conn, buf []byte, timeout time.Duration) (n int, err erro
 
 func listenTCPOrUnix(addr string) (net.Listener, error) {
 	if strings.HasPrefix(addr, "/") {
-		os.Remove(addr)
 		l, err := net.Listen("unix", addr)
+		if errors.Is(err, syscall.EADDRINUSE) {
+			// Only reclaim a stale socket. Never unlink an active listener, a symlink,
+			// or an ordinary file belonging to another instance.
+			info, statErr := os.Lstat(addr)
+			if statErr == nil && info.Mode()&os.ModeSocket != 0 {
+				conn, dialErr := net.DialTimeout("unix", addr, 200*time.Millisecond)
+				if dialErr == nil {
+					_ = conn.Close()
+				} else if errors.Is(dialErr, syscall.ECONNREFUSED) {
+					current, statErr := os.Lstat(addr)
+					if statErr == nil && os.SameFile(info, current) {
+						if removeErr := os.Remove(addr); removeErr != nil {
+							return nil, removeErr
+						}
+						l, err = net.Listen("unix", addr)
+					}
+				}
+			}
+		}
 		if err != nil {
 			return l, err
 		}
 		err = os.Chmod(addr, 0o660)
-		return l, err
+		if err != nil {
+			_ = l.Close()
+			return nil, err
+		}
+		return l, nil
 	}
 	return net.Listen("tcp", addr)
 }
