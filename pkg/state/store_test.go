@@ -1,6 +1,7 @@
 package state
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -120,16 +121,16 @@ func TestStateWorker(t *testing.T) {
 	id := fmt.Sprint(os.Getpid())
 	s, err := Open(dir)
 	if err != nil {
-		panic(err)
+		panic(fmt.Errorf("open state store: %w", err))
 	}
 	defer s.Close()
 	lock, err := Lock(filepath.Join(dir, id+".lock"))
 	if err != nil {
-		panic(err)
+		panic(fmt.Errorf("lock generation: %w", err))
 	}
 	defer lock.Close()
 	if err = s.Register(Generation{ID: id, PID: os.Getpid()}); err != nil {
-		panic(err)
+		panic(fmt.Errorf("register generation: %w", err))
 	}
 	ctx := context.Background()
 	for range 40 {
@@ -139,19 +140,19 @@ func TestStateWorker(t *testing.T) {
 			continue
 		}
 		if err != nil {
-			panic(err)
+			panic(fmt.Errorf("acquire ticket: %w", err))
 		}
 		for !ticket.Active {
 			time.Sleep(time.Millisecond)
 			ts, err := s.Poll(id)
 			if err != nil {
-				panic(err)
+				panic(fmt.Errorf("poll tickets: %w", err))
 			}
 			ticket = ts[ticket.ID]
 		}
 		time.Sleep(2 * time.Millisecond)
 		if err = s.Release(ctx, id, ticket.ID); err != nil {
-			panic(err)
+			panic(fmt.Errorf("release ticket %d: %w", ticket.ID, err))
 		}
 	}
 }
@@ -162,17 +163,32 @@ func TestConcurrentProcessAdmission(t *testing.T) {
 	require.NoError(t, s.Activate("parent", "", []Limit{{Name: "u", Active: 2, Queued: 20, PerIP: 2}}))
 	executable, err := os.Executable()
 	require.NoError(t, err)
-	commands := make([]*exec.Cmd, 0, 4)
+	type worker struct {
+		cmd    *exec.Cmd
+		output *bytes.Buffer
+	}
+	workers := make([]worker, 0, 4)
 	for range 4 {
 		c := exec.Command(executable, "-test.run=^TestStateWorker$")
 		c.Env = append(os.Environ(), "RSYNC_STATE_TEST_DIR="+dir)
+		output := new(bytes.Buffer)
+		c.Stdout = output
+		c.Stderr = output
 		require.NoError(t, c.Start())
-		commands = append(commands, c)
+		workers = append(workers, worker{cmd: c, output: output})
 	}
 	var wg sync.WaitGroup
-	errs := make(chan error, len(commands))
-	for _, c := range commands {
-		wg.Go(func() { errs <- c.Wait() })
+	type workerResult struct {
+		pid    int
+		err    error
+		output string
+	}
+	results := make(chan workerResult, len(workers))
+	for _, w := range workers {
+		wg.Go(func() {
+			err := w.cmd.Wait()
+			results <- workerResult{pid: w.cmd.Process.Pid, err: err, output: w.output.String()}
+		})
 	}
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
@@ -181,8 +197,11 @@ func TestConcurrentProcessAdmission(t *testing.T) {
 	for {
 		select {
 		case <-done:
-			for range commands {
-				require.NoError(t, <-errs)
+			for range workers {
+				result := <-results
+				if result.err != nil {
+					t.Errorf("worker PID %d failed: %v\n%s", result.pid, result.err, result.output)
+				}
 			}
 			return
 		case <-ticker.C:
