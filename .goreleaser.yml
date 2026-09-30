@@ -16,8 +16,11 @@ builds:
     ldflags:
       - -s -w -X github.com/ustclug/rsync-proxy/cmd.Version={{.Version}} -X github.com/ustclug/rsync-proxy/cmd.BuildDate={{.Date}} -X github.com/ustclug/rsync-proxy/cmd.GitCommit={{.Commit}}
 archives:
-  - formats: binary
-    name_template: "{{ .Binary }}_{{ .Os  }}_{{ .Arch }}"
+  - formats:
+      - tar.gz
+    files:
+      - README.md
+      - assets/*
 checksum:
   name_template: 'checksums.txt'
 snapshot:

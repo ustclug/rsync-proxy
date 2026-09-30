@@ -21,8 +21,7 @@ vim /etc/rsync-proxy/config.toml  # 根据实际情况修改配置
 
 ```shell
 make linux-amd64
-# macOS: make darwin-amd64
-cd build/rsync-proxy-......  # cd 到编译的目标目录
+# 编译结果位于 dist/ 下；构建发布归档：make release
 ```
 
 Linux 二进制程序也可从 release 页面下载。
