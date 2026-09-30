@@ -78,8 +78,20 @@ var (
 	largeNumberColor = color.New(color.FgRed).FprintfFunc()
 	gigabytesColor   = color.New(color.FgGreen).FprintfFunc()
 	megabytesColor   = color.New(color.FgCyan).FprintfFunc()
+	ipAddressColor   = color.New(color.FgYellow)
 	mutedColor       = color.New(color.FgHiBlack).Add(color.Bold)
 )
+
+func formatRemoteAddrColored(addr string) string {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+
+	separator := strings.LastIndexByte(addr, ':')
+	host := addr[:separator]
+	return ipAddressColor.Sprint(host) + ":" + mutedColor.Sprint(port)
+}
 
 func formatSizeColored(size int64) string {
 	const (
@@ -199,7 +211,7 @@ func SendConnectionsRequest(addr string, stdout, stderr io.Writer) error {
 	for _, conn := range result.Connections {
 		_ = table.Append([]string{
 			strconv.Itoa(conn.Index),
-			conn.RemoteAddr,
+			formatRemoteAddrColored(conn.RemoteAddr),
 			conn.Module,
 			conn.Upstream,
 			conn.ConnectedAt.Format(time.DateTime),

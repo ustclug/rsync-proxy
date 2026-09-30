@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/fatih/color"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestFormatSizeColored(t *testing.T) {
@@ -26,9 +27,7 @@ func TestFormatSizeColored(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := formatSizeColored(tt.size); got != tt.want {
-				t.Fatalf("formatSizeColored(%d) = %q, want %q", tt.size, got, tt.want)
-			}
+			assert.Equal(t, tt.want, formatSizeColored(tt.size))
 		})
 	}
 }
@@ -55,9 +54,59 @@ func TestFormatSizeColoredMutesLastThreeDigits(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := formatSizeColored(tt.size); got != tt.want {
-				t.Fatalf("formatSizeColored(%d) = %q, want %q", tt.size, got, tt.want)
-			}
+			assert.Equal(t, tt.want, formatSizeColored(tt.size))
 		})
 	}
+}
+
+func TestFormatRemoteAddrColored(t *testing.T) {
+	originalIPAddressColor := ipAddressColor
+	originalMutedColor := mutedColor
+	ipAddressColor = color.New(color.FgYellow)
+	mutedColor = color.New(color.FgHiBlack).Add(color.Bold)
+	ipAddressColor.EnableColor()
+	mutedColor.EnableColor()
+	t.Cleanup(func() {
+		ipAddressColor = originalIPAddressColor
+		mutedColor = originalMutedColor
+	})
+
+	yellow := func(value string) string {
+		return "\x1b[33m" + value + "\x1b[0m"
+	}
+	muted := func(value string) string {
+		return "\x1b[90;1m" + value + "\x1b[0;22m"
+	}
+	tests := []struct {
+		name string
+		addr string
+		want string
+	}{
+		{
+			name: "IPv4",
+			addr: "192.0.2.1:873",
+			want: yellow("192.0.2.1") + ":" + muted("873"),
+		},
+		{
+			name: "IPv6",
+			addr: "[2001:db8::1]:12345",
+			want: yellow("[2001:db8::1]") + ":" + muted("12345"),
+		},
+		{name: "invalid address", addr: "unknown", want: "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, formatRemoteAddrColored(tt.addr))
+		})
+	}
+}
+
+func TestFormatRemoteAddrColoredWithoutColor(t *testing.T) {
+	originalNoColor := color.NoColor
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = originalNoColor })
+
+	const addr = "192.0.2.1:873"
+	assert.Equal(t, addr, formatRemoteAddrColored(addr))
 }
