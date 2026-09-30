@@ -32,3 +32,32 @@ func TestFormatSizeColored(t *testing.T) {
 		})
 	}
 }
+
+func TestFormatSizeColoredMutesLastThreeDigits(t *testing.T) {
+	originalMutedColor := mutedColor
+	mutedColor = color.New(color.FgHiBlack).Add(color.Bold)
+	mutedColor.EnableColor()
+	t.Cleanup(func() { mutedColor = originalMutedColor })
+
+	muted := func(value string) string {
+		return "\x1b[90;1m" + value
+	}
+	tests := []struct {
+		name string
+		size int64
+		want string
+	}{
+		{name: "three digits", size: 999, want: muted("999")},
+		{name: "four digits", size: 1_999, want: "1" + muted("999")},
+		{name: "zero-padded suffix", size: 1_042, want: "1" + muted("042")},
+		{name: "zero suffix", size: 1_000, want: "1" + muted("000")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatSizeColored(tt.size); got != tt.want {
+				t.Fatalf("formatSizeColored(%d) = %q, want %q", tt.size, got, tt.want)
+			}
+		})
+	}
+}

@@ -94,10 +94,13 @@ func formatSizeColored(size int64) string {
 	gb := size / GB % 1000
 	mb := size / MB % 1000
 	remainder := size % MB
+	thousands := remainder / 1000
+	units := remainder % 1000
 
 	padGB := tb > 0
 	padMB := padGB || gb > 0
-	padRemainder := padMB || mb > 0
+	padThousands := padMB || mb > 0
+	padUnits := padThousands || thousands > 0
 
 	sb := strings.Builder{}
 	if tb > 0 {
@@ -117,11 +120,18 @@ func formatSizeColored(size int64) string {
 			megabytesColor(&sb, "%d", mb)
 		}
 	}
-	if remainder > 0 || padRemainder {
-		if padRemainder {
-			fmt.Fprintf(&sb, "%06d", remainder)
+	if thousands > 0 || padThousands {
+		if padThousands {
+			fmt.Fprintf(&sb, "%03d", thousands)
 		} else {
-			fmt.Fprintf(&sb, "%d", remainder)
+			fmt.Fprintf(&sb, "%d", thousands)
+		}
+	}
+	if units > 0 || padUnits {
+		if padUnits {
+			mutedColor.Fprintf(&sb, "%03d", units)
+		} else {
+			mutedColor.Fprintf(&sb, "%d", units)
 		}
 	}
 	return sb.String()
