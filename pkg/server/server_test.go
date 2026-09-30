@@ -1835,6 +1835,9 @@ func TestThroughputFloorExcludesGracePeriodFromFirstWindow(t *testing.T) {
 		if _, _, err := doServerHandshake(conn, RsyncdServerVersion); err != nil {
 			return
 		}
+		if _, err := conn.Write([]byte("@RSYNCD: OK\n")); err != nil {
+			return
+		}
 		_, _ = io.ReadAll(conn)
 	})
 	fakeRsync.Start()
@@ -1853,6 +1856,14 @@ func TestThroughputFloorExcludesGracePeriodFromFirstWindow(t *testing.T) {
 
 	_, err = doClientHandshake(conn, RsyncdServerVersion, "fake")
 	r.NoError(err)
+
+	// Wait for the upstream handshake before sending relay data, so it
+	// cannot be read together with the module name by the proxy.
+	r.NoError(rawConn.SetReadDeadline(time.Now().Add(5 * time.Second)))
+	ready, err := conn.ReadLine()
+	r.NoError(err)
+	r.Equal("@RSYNCD: OK\n", ready)
+	r.NoError(rawConn.SetReadDeadline(time.Time{}))
 
 	// Ramp-up: trickle a few bytes, far below the floor. These are
 	// attributed to the grace period and must not count towards the
