@@ -60,17 +60,24 @@ func TestFormatSizeColoredMutesLastThreeDigits(t *testing.T) {
 }
 
 func TestFormatRemoteAddrColored(t *testing.T) {
+	originalIPBracketColor := ipBracketColor
 	originalIPAddressColor := ipAddressColor
 	originalMutedColor := mutedColor
+	ipBracketColor = color.New(color.FgRed)
 	ipAddressColor = color.New(color.FgYellow)
 	mutedColor = color.New(color.FgHiBlack).Add(color.Bold)
+	ipBracketColor.EnableColor()
 	ipAddressColor.EnableColor()
 	mutedColor.EnableColor()
 	t.Cleanup(func() {
+		ipBracketColor = originalIPBracketColor
 		ipAddressColor = originalIPAddressColor
 		mutedColor = originalMutedColor
 	})
 
+	red := func(value string) string {
+		return "\x1b[31m" + value + "\x1b[0m"
+	}
 	yellow := func(value string) string {
 		return "\x1b[33m" + value + "\x1b[0m"
 	}
@@ -90,7 +97,7 @@ func TestFormatRemoteAddrColored(t *testing.T) {
 		{
 			name: "IPv6",
 			addr: "[2001:db8::1]:12345",
-			want: yellow("[2001:db8::1]") + ":" + muted("12345"),
+			want: red("[") + yellow("2001:db8::1") + red("]") + ":" + muted("12345"),
 		},
 		{name: "invalid address", addr: "unknown", want: "unknown"},
 	}

@@ -78,6 +78,7 @@ var (
 	largeNumberColor = color.New(color.FgRed).FprintfFunc()
 	gigabytesColor   = color.New(color.FgGreen).FprintfFunc()
 	megabytesColor   = color.New(color.FgCyan).FprintfFunc()
+	ipBracketColor   = color.New(color.FgRed)
 	ipAddressColor   = color.New(color.FgYellow)
 	mutedColor       = color.New(color.FgHiBlack).Add(color.Bold)
 )
@@ -90,7 +91,13 @@ func formatRemoteAddrColored(addr string) string {
 
 	separator := strings.LastIndexByte(addr, ':')
 	host := addr[:separator]
-	return ipAddressColor.Sprint(host) + ":" + mutedColor.Sprint(port)
+	formattedHost := ipAddressColor.Sprint(host)
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		formattedHost = ipBracketColor.Sprint("[") +
+			ipAddressColor.Sprint(host[1:len(host)-1]) +
+			ipBracketColor.Sprint("]")
+	}
+	return formattedHost + ":" + mutedColor.Sprint(port)
 }
 
 func formatSizeColored(size int64) string {
