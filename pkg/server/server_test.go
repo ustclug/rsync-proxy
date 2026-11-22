@@ -1961,3 +1961,66 @@ modules = ["m1"]
 		assert.Equal(t, 60*time.Second, srv.MinThroughputGrace)
 	})
 }
+
+// TestRelayTeardownDoesNotHangOnBlockedWriter is a regression test for relays
+// that never finished: the client stops reading (so the upstream->client
+// copier blocks in Write) and then half-closes its side. The client->upstream
+// copier finishes first, the watcher exits with it, and the relay used to wait
+// forever for the blocked copier while still holding the queue slot.
+func TestRelayTeardownDoesNotHangOnBlockedWriter(t *testing.T) {
+	srv := startServer(t)
+	defer srv.Close()
+	srv.relayTeardownTimeout = 500 * time.Millisecond
+	// Enable every relay watcher: none of them may be needed for the cleanup.
+	srv.RelayIdleTimeout = time.Hour
+	srv.RelayMaxDuration = time.Hour
+
+	fakeRsync := rsync.NewServer(func(conn *rsync.Conn) {
+		defer conn.Close()
+		if _, _, err := doServerHandshake(conn, RsyncdServerVersion); err != nil {
+			return
+		}
+		chunk := make([]byte, 64*1024)
+		for {
+			if _, err := conn.Write(chunk); err != nil {
+				return
+			}
+		}
+	})
+	fakeRsync.Start()
+	defer fakeRsync.Close()
+
+	srv.modules = map[string][]Target{
+		"fake": {{Upstream: "u1", Addr: fakeRsync.Listener.Addr().String()}},
+	}
+	srv.upstreams = []upstreamConfig{{Name: "u1", MaxActiveConns: 1}}
+	srv.upstreamQueues = map[string]*queue.Queue{"u1": queue.New(1, 1)}
+
+	rawConn, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+	require.NoError(t, err)
+	defer rawConn.Close()
+	conn := rsync.NewConn(rawConn)
+	_, err = doClientHandshake(conn, RsyncdServerVersion, "fake")
+	require.NoError(t, err)
+
+	// Never read: wait until the proxy cannot push any more data to us.
+	var last int64 = -1
+	require.Eventually(t, func() bool {
+		infos := srv.ListConnectionInfo()
+		if len(infos) != 1 {
+			return false
+		}
+		cur := infos[0].snapshot().SentBytes
+		stalled := cur > 0 && cur == last
+		last = cur
+		return stalled
+	}, 10*time.Second, 200*time.Millisecond)
+
+	// Half-close: the proxy sees EOF from us while it is blocked writing to us.
+	require.NoError(t, rawConn.(*net.TCPConn).CloseWrite())
+
+	require.Eventually(t, func() bool {
+		q, _ := srv.getQueueForUpstream("u1")
+		return srv.GetActiveConnectionCount() == 0 && q.ActiveLen() == 0
+	}, 5*time.Second, 50*time.Millisecond, "relay must be torn down and its queue slot released")
+}

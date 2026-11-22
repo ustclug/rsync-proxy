@@ -35,6 +35,10 @@ const (
 	defaultRsyncPortString = "873"
 )
 
+// defaultRelayTeardownTimeout bounds how long the second relay direction may
+// keep running after the first one has finished.
+const defaultRelayTeardownTimeout = 10 * time.Second
+
 var (
 	RsyncdVersionPrefix = []byte("@RSYNCD:")
 	// Daemon auth list is a must in server version since 32.0
@@ -214,6 +218,11 @@ type Server struct {
 	Motd string
 	// --- End of options section
 
+	// relayTeardownTimeout is defaultRelayTeardownTimeout; a field (not a
+	// package variable) so that tests can shorten it for their own server
+	// without racing with relays of other servers.
+	relayTeardownTimeout time.Duration
+
 	accessLog, accessJSONLog, errorLog *logging.FileLogger
 
 	reloadLock sync.RWMutex
@@ -286,6 +295,8 @@ func New() *Server {
 		accessJSONLog:  accessJSONLog,
 		errorLog:       errorLog,
 		upstreamQueues: make(map[string]*queue.Queue),
+
+		relayTeardownTimeout: defaultRelayTeardownTimeout,
 	}
 	return s
 }
@@ -1220,6 +1231,15 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) (re
 		}
 		upConn.Close()
 	}
+	// One direction is done and the watcher goroutine has exited together
+	// with it. The other copier may still be parked in a Write towards the
+	// socket that was only half-closed above (a peer that does not read):
+	// without a deadline it would sit there forever, pinning the queue
+	// slot, the per-IP counter, both sockets and the upstream's rsync
+	// process, with none of the relay limits applying any more. Bound it.
+	teardownDeadline := time.Now().Add(s.relayTeardownTimeout)
+	_ = upConn.SetDeadline(teardownDeadline)
+	_ = downConn.SetDeadline(teardownDeadline)
 	<-sentClosed
 	<-receivedClosed
 
