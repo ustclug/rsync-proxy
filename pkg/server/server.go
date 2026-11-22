@@ -41,13 +41,6 @@ var (
 	// See https://github.com/RsyncProject/rsync/blob/a6312e60c95e5ebb5764eaf18eb07be23420ebc6/clientserver.c#L203
 	RsyncdServerVersion = []byte("@RSYNCD: 32.0 sha512 sha256 sha1 md5 md4\n")
 	RsyncdExit          = []byte("@RSYNCD: EXIT\n")
-
-	bufPool = &sync.Pool{
-		New: func() any {
-			buf := make([]byte, ReadBufferSize)
-			return &buf
-		},
-	} // pool of (*[]byte)
 )
 
 const lineFeed = '\n'
@@ -837,23 +830,30 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) (re
 	s.connInfo.Store(index, &info)
 	defer s.connInfo.Delete(index)
 
-	bufPtr := bufPool.Get().(*[]byte)
-	defer bufPool.Put(bufPtr)
-	buf := *bufPtr
-
 	addr := downConn.RemoteAddr().String()
 	ip := netAddrToString(downConn.RemoteAddr())
 
 	writeTimeout := s.WriteTimeout
 	readTimeout := s.ReadTimeout
 
-	n, err := readLine(downConn, buf, readTimeout)
+	// All handshake input goes through one bufio.Reader so that "a line" is
+	// exactly one line: anything a client pipelines after a '\n' stays
+	// buffered and is relayed to the upstream later, in order, instead of
+	// being glued to the greeting (and replayed to the upstream) or to the
+	// module name (and written into the access log).
+	downBuf := bufio.NewReaderSize(downConn, ReadBufferSize)
+	// One absolute deadline bounds the whole client handshake (TLS
+	// handshake, greeting and module line) regardless of how the client
+	// slices its bytes.
+	if readTimeout > 0 {
+		_ = downConn.SetReadDeadline(time.Now().Add(readTimeout))
+	}
+
+	rsyncdClientVersion, err := readLine(downBuf)
 	if err != nil {
 		return fmt.Errorf("read version from client %s: %w", addr, err)
 	}
-	rsyncdClientVersion := make([]byte, n)
-	copy(rsyncdClientVersion, buf[:n])
-	if !bytes.HasPrefix(rsyncdClientVersion, RsyncdVersionPrefix) {
+	if !isValidGreeting(rsyncdClientVersion) {
 		return fmt.Errorf("unknown version from client %s: %q", addr, rsyncdClientVersion)
 	}
 	record.RsyncVersion = rsyncProtocolVersion(rsyncdClientVersion)
@@ -863,14 +863,10 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) (re
 		return fmt.Errorf("send version to client %s: %w", addr, err)
 	}
 
-	n, err = readLine(downConn, buf, readTimeout)
+	moduleLine, err := readLine(downBuf)
 	if err != nil {
 		return fmt.Errorf("read module from client %s: %w", addr, err)
 	}
-	if n == 0 {
-		return fmt.Errorf("empty request from client %s", addr)
-	}
-	data := buf[:n]
 	if s.Motd != "" {
 		_, err = writeWithTimeout(downConn, []byte(s.Motd+"\n"), writeTimeout)
 		if err != nil {
@@ -878,16 +874,25 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) (re
 		}
 	}
 
-	if len(data) == 1 { // single '\n'
+	if len(moduleLine) == 1 { // single '\n'
 		s.accessLog.F("client %s requests listing all modules", addr)
 		n, err := s.listAllModules(downConn)
 		info.SentBytes.Add(int64(n))
 		return err
 	}
 
-	moduleName := string(buf[:n-1]) // trim trailing \n
-	info.SetModule(moduleName)
-	record.Module = moduleName
+	moduleName := string(moduleLine[:len(moduleLine)-1]) // trim trailing \n
+	record.Module = moduleName                           // the JSON access log escapes it
+	if !isValidModuleName(moduleName) {
+		// A name with control characters can never be a configured
+		// module. It is logged quoted (like every unknown name below)
+		// and never reaches /status, /metrics or the upstream.
+		s.unknownModuleCount.Add(1)
+		record.Status = http.StatusBadRequest
+		_, _ = writeWithTimeout(downConn, []byte("@ERROR: invalid module name\n"), writeTimeout)
+		s.accessLog.F("client %s requests non-existing module %q", ip, moduleName)
+		return nil
+	}
 
 	targets, ok := s.getTargetsForModule(moduleName)
 	if !ok {
@@ -901,9 +906,16 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) (re
 		s.unknownModuleCount.Add(1)
 		record.Status = http.StatusNotFound
 		_, _ = writeWithTimeout(downConn, fmt.Appendf(nil, "@ERROR: Unknown module '%s'\n", moduleName), writeTimeout)
-		s.accessLog.F("client %s requests non-existing module %s", ip, moduleName)
+		// %q: the name is client-controlled text. Quoting keeps the record
+		// unambiguous for humans and log parsers; the fail2ban filters
+		// shipped in assets/ are anchored on the record prefix so that
+		// nothing inside the quotes can be taken for another record.
+		s.accessLog.F("client %s requests non-existing module %q", ip, moduleName)
 		return nil
 	}
+	// Only names that exist in the configuration are published through
+	// /status and the per-connection metrics.
+	info.SetModule(moduleName)
 
 	target := targets[chooseTargetByClientIP(net.ParseIP(ip), len(targets))]
 	upstreamAddr := target.Addr
@@ -1002,24 +1014,21 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) (re
 		return fmt.Errorf("send version to upstream %s: %w", upAddr, err)
 	}
 
-	n, err = readLine(upConn, buf, readTimeout)
+	upBuf := bufio.NewReaderSize(upConn, ReadBufferSize)
+	if readTimeout > 0 {
+		_ = upConn.SetReadDeadline(time.Now().Add(readTimeout))
+	}
+	upstreamVersion, err := readLine(upBuf)
 	if err != nil {
 		return fmt.Errorf("read version from upstream %s: %w", upAddr, err)
 	}
-	data = buf[:n]
-	if !bytes.HasPrefix(data, RsyncdVersionPrefix) {
-		return fmt.Errorf("unknown version from upstream %s: %s", upAddr, data)
+	if !bytes.HasPrefix(upstreamVersion, RsyncdVersionPrefix) {
+		return fmt.Errorf("unknown version from upstream %s: %q", upAddr, upstreamVersion)
 	}
-	record.RsyncdVersion = rsyncProtocolVersion(data)
-
-	// send back the motd
-	idx := bytes.IndexByte(data, lineFeed)
-	if idx+1 < n {
-		_, err = writeWithTimeout(downConn, data[idx+1:], writeTimeout)
-		if err != nil {
-			return fmt.Errorf("send motd to client %s: %w", ip, err)
-		}
-	}
+	record.RsyncdVersion = rsyncProtocolVersion(upstreamVersion)
+	// Whatever the upstream sent right after its greeting (typically its
+	// motd) is still buffered in upBuf; the relay below reads from upBuf, so
+	// it reaches the client first and unmodified.
 
 	_, err = writeWithTimeout(upConn, []byte(moduleName+"\n"), writeTimeout)
 	if err != nil {
@@ -1035,8 +1044,10 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) (re
 
 	// Use countingReader to track bytes in real-time
 	// <sent> and <received> are relative to the client, not upstream
-	downReader := &countingReader{reader: downConn, counter: &info.ReceivedBytes}
-	upReader := &countingReader{reader: upConn, counter: &info.SentBytes}
+	// The readers are the handshake bufio.Readers: bytes that arrived
+	// together with a handshake line are relayed first, in order.
+	downReader := &countingReader{reader: downBuf, counter: &info.ReceivedBytes}
+	upReader := &countingReader{reader: upBuf, counter: &info.SentBytes}
 
 	// Optional watchers on the bidirectional relay phase:
 	//   * RelayIdleTimeout terminates a connection that has had no

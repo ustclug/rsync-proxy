@@ -1,7 +1,10 @@
 package server
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -67,26 +70,67 @@ func generateProxyProtocolHeader(sourceAddr, destAddr net.Addr) (string, error) 
 	return fmt.Sprintf("PROXY %s %s %s %d %d\r\n", ipVersion, sourceIP.String(), destIP.String(), sourcePort, destPort), nil
 }
 
-// readLine will read as much as it can until the last read character is a newline character.
-func readLine(conn net.Conn, buf []byte, timeout time.Duration) (n int, err error) {
-	max := len(buf)
-	for {
-		if timeout > 0 {
-			_ = conn.SetReadDeadline(time.Now().Add(timeout))
-		}
-		var nr int
-		nr, err = conn.Read(buf[n:])
-		n += nr
-		if n > 0 && buf[n-1] == '\n' {
-			return n, nil
-		}
-		if n == max {
-			return n, nil
-		}
-		if err != nil {
-			return
+var errLineTooLong = errors.New("handshake line too long")
+
+// readLine reads exactly one '\n'-terminated line (the returned slice includes
+// the '\n') from br. Bytes the peer sent after the newline are NOT part of the
+// returned line: they stay buffered in br and are handed to the relay later.
+// A line that does not fit into br's buffer is an error instead of being
+// returned without its terminator.
+//
+// The caller is responsible for the read deadline, so that a whole handshake
+// phase can be bounded by a single absolute deadline instead of one timeout
+// per received byte.
+func readLine(br *bufio.Reader) ([]byte, error) {
+	line, err := br.ReadSlice('\n')
+	if errors.Is(err, bufio.ErrBufferFull) {
+		return nil, errLineTooLong
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, len(line))
+	copy(out, line)
+	return out, nil
+}
+
+// isValidGreeting reports whether line is a single well-formed daemon greeting
+// ("@RSYNCD: <ver>[.<sub>][ <digest list>]\n") made of printable ASCII only.
+func isValidGreeting(line []byte) bool {
+	if !bytes.HasPrefix(line, RsyncdVersionPrefix) || len(line) < len(RsyncdVersionPrefix)+3 {
+		return false
+	}
+	if line[len(line)-1] != '\n' || line[len(RsyncdVersionPrefix)] != ' ' {
+		return false
+	}
+	rest := line[len(RsyncdVersionPrefix)+1 : len(line)-1]
+	if len(rest) == 0 || rest[0] < '0' || rest[0] > '9' {
+		return false
+	}
+	for _, c := range rest {
+		if c < 0x20 || c > 0x7e {
+			return false
 		}
 	}
+	return true
+}
+
+// isValidModuleName rejects names that can never be a configured rsyncd
+// module and that are dangerous to copy into line-oriented logs or terminals:
+// the empty name and anything containing an ASCII control character (CR, LF,
+// NUL, ESC, DEL, ...). Everything else is decided by the module table lookup;
+// bytes that are not valid UTF-8 are deliberately tolerated because module
+// names are plain byte strings for rsync.
+func isValidModuleName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		if c := name[i]; c < 0x20 || c == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 func listenTCPOrUnix(addr string) (net.Listener, error) {
