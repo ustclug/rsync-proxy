@@ -1,6 +1,6 @@
 module github.com/ustclug/rsync-proxy
 
-go 1.26
+go 1.26.11
 
 require (
 	github.com/fatih/color v1.18.0
