@@ -1487,15 +1487,39 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	}
 }
 
+// maxAcceptBackoff bounds the delay between two Accept attempts after a
+// failure.
+const maxAcceptBackoff = time.Second
+
 func (s *Server) runRsyncServer(ctx context.Context, listener net.Listener, acceptErr string) error {
+	var backoff time.Duration
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return nil
 			}
-			return fmt.Errorf("%s: %w", acceptErr, err)
+			// Accept can fail for reasons a remote peer can provoke
+			// (EMFILE/ENFILE when the fd table is full, ENOBUFS, ENOMEM,
+			// ...). Returning here would make Run() return and the
+			// process exit, killing every in-flight transfer. Back off
+			// and keep serving instead, like net/http does.
+			if backoff == 0 {
+				backoff = 5 * time.Millisecond
+			} else if backoff *= 2; backoff > maxAcceptBackoff {
+				backoff = maxAcceptBackoff
+			}
+			// error_log may be unset (discarded): also tell stderr/journal.
+			log.Printf("[WARN] %s: %v; retrying in %s", acceptErr, err, backoff)
+			s.errorLog.F("[WARN] %s: %v; retrying in %s", acceptErr, err, backoff)
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(backoff):
+			}
+			continue
 		}
+		backoff = 0
 		go s.handleConn(ctx, conn)
 	}
 }
