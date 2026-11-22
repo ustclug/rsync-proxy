@@ -1134,9 +1134,10 @@ func TestQueueFullRejectsConnection(t *testing.T) {
 	line, err := client3.ReadLine()
 	require.NoError(t, err)
 	assert.Contains(t, line, "Server queue is full")
-	exit, err := client3.ReadLine()
+	assert.True(t, strings.HasPrefix(line, "@ERROR:"), "queue-full must be fatal for the rsync client")
+	rest, err := io.ReadAll(client3)
 	require.NoError(t, err)
-	assert.Equal(t, string(RsyncdExit), exit)
+	assert.NotContains(t, string(rest), "@RSYNCD: EXIT")
 
 	release.Done()
 

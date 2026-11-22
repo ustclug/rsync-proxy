@@ -995,8 +995,10 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) (re
 		s.getUpstreamCounters(target.Upstream).queueFull.Add(1)
 		record.Status = http.StatusServiceUnavailable
 		s.accessLog.F("client %s queue full for module %s", ip, moduleName)
-		_, _ = writeWithTimeout(downConn, []byte("Server queue is full for this upstream. Please retry later.\n"), writeTimeout)
-		_, _ = writeWithTimeout(downConn, RsyncdExit, writeTimeout)
+		// "@ERROR:" (not a plain line followed by "@RSYNCD: EXIT") so
+		// that rsync exits non-zero instead of reporting a successful,
+		// empty run to mirror tooling - see the unknown-module case.
+		_, _ = writeWithTimeout(downConn, []byte("@ERROR: Server queue is full for this upstream. Please retry later.\n"), writeTimeout)
 		return nil
 	}
 	if !status.Ok {
