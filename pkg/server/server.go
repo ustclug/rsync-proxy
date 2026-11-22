@@ -1491,13 +1491,13 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 // failure.
 const maxAcceptBackoff = time.Second
 
-func (s *Server) runRsyncServer(ctx context.Context, listener net.Listener, acceptErr string) error {
+func (s *Server) runRsyncServer(ctx context.Context, listener net.Listener, acceptErr string) {
 	var backoff time.Duration
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
-				return nil
+				return
 			}
 			// Accept can fail for reasons a remote peer can provoke
 			// (EMFILE/ENFILE when the fd table is full, ENOBUFS, ENOMEM,
@@ -1514,7 +1514,7 @@ func (s *Server) runRsyncServer(ctx context.Context, listener net.Listener, acce
 			s.errorLog.F("[WARN] %s: %v; retrying in %s", acceptErr, err, backoff)
 			select {
 			case <-ctx.Done():
-				return nil
+				return
 			case <-time.After(backoff):
 			}
 			continue
@@ -1539,17 +1539,11 @@ func (s *Server) Run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
-		err := s.runRsyncServer(ctx, s.TCPListener, "accept rsync connection")
-		if err != nil {
-			errC <- err
-		}
+		s.runRsyncServer(ctx, s.TCPListener, "accept rsync connection")
 	}()
 	if s.TLSListener != nil {
 		go func() {
-			err := s.runRsyncServer(ctx, s.TLSListener, "accept tls rsync connection")
-			if err != nil {
-				errC <- err
-			}
+			s.runRsyncServer(ctx, s.TLSListener, "accept tls rsync connection")
 		}()
 	}
 

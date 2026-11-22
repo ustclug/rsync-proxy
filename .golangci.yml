@@ -20,7 +20,7 @@ linters:
     - whitespace
   settings:
     exhaustive:
-      explicit-exhaustive-switch: true
+      explicit-exhaustive: true
     govet:
       enable:
         - nilness

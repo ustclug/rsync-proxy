@@ -38,7 +38,10 @@ func TestAcceptLoopSurvivesTransientErrors(t *testing.T) {
 	srv.WriteTimeout = time.Second
 
 	done := make(chan error, 1)
-	go func() { done <- srv.runRsyncServer(context.Background(), l, "accept rsync connection") }()
+	go func() {
+		srv.runRsyncServer(context.Background(), l, "accept rsync connection")
+		done <- nil
+	}()
 
 	// The loop is still alive after the failures and serves a client.
 	conn, err := net.Dial("tcp", inner.Addr().String())
@@ -62,7 +65,7 @@ func TestAcceptLoopSurvivesTransientErrors(t *testing.T) {
 	require.NoError(t, inner.Close())
 	select {
 	case err := <-done:
-		assert.NoError(t, err)
+		require.NoError(t, err)
 	case <-time.After(3 * time.Second):
 		t.Fatal("accept loop did not stop after the listener was closed")
 	}
