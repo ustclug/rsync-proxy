@@ -629,6 +629,14 @@ func (s *Server) getRelayTimings() relayTimings {
 	}
 }
 
+// getMotd returns the configured motd under the reload lock; loadConfig
+// replaces it while connections are being served.
+func (s *Server) getMotd() string {
+	s.reloadLock.RLock()
+	defer s.reloadLock.RUnlock()
+	return s.Motd
+}
+
 // getTCPKeepAlive returns the configured TCP keepalive period under
 // the reload lock.
 func (s *Server) getTCPKeepAlive() time.Duration {
@@ -854,9 +862,9 @@ func (s *Server) getTLSCertificate(*tls.ClientHelloInfo) (*tls.Certificate, erro
 
 func (s *Server) listAllModules(downConn net.Conn) (int, error) {
 	var buf bytes.Buffer
-	modules := make([]string, 0, len(s.modules))
 
 	s.reloadLock.RLock()
+	modules := make([]string, 0, len(s.modules))
 	for name := range s.modules {
 		modules = append(modules, name)
 	}
@@ -946,8 +954,8 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) (re
 	if err != nil {
 		return fmt.Errorf("read module from client %s: %w", addr, err)
 	}
-	if s.Motd != "" {
-		_, err = writeWithTimeout(downConn, []byte(s.Motd+"\n"), writeTimeout)
+	if motd := s.getMotd(); motd != "" {
+		_, err = writeWithTimeout(downConn, []byte(motd+"\n"), writeTimeout)
 		if err != nil {
 			return fmt.Errorf("send motd to client %s: %w", addr, err)
 		}

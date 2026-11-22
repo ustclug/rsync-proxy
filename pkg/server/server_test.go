@@ -2117,3 +2117,47 @@ discover_modules = true
 		return err == nil && strings.Contains(string(data), "requests listing all modules")
 	}, 2*time.Second, 20*time.Millisecond)
 }
+
+// TestReloadWhileServingDoesNotRace reloads the configuration (changing the
+// motd and the module table) while clients are being served. It is only
+// meaningful under the race detector.
+func TestReloadWhileServingDoesNotRace(t *testing.T) {
+	srv := startServer(t)
+	defer srv.Close()
+
+	cfg := func(motd string) string {
+		return fmt.Sprintf("[proxy]\nmotd = %q\n\n[upstreams.u1]\naddress = \"127.0.0.1:1\"\nmodules = [\"m\"]\n", motd)
+	}
+	require.NoError(t, srv.ReadConfig(strings.NewReader(cfg("short")), false))
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			motd := "short"
+			if i%2 == 0 {
+				motd = strings.Repeat("a much longer message of the day ", 8)
+			}
+			_ = srv.ReadConfig(strings.NewReader(cfg(motd)), false)
+		}
+	}()
+
+	for i := 0; i < 100; i++ {
+		c, err := net.Dial("tcp", srv.TCPListener.Addr().String())
+		require.NoError(t, err)
+		conn := rsync.NewConn(c)
+		_, err = doClientHandshake(conn, RsyncdServerVersion, "")
+		require.NoError(t, err)
+		_, _ = io.ReadAll(conn)
+		_ = conn.Close()
+	}
+	close(stop)
+	wg.Wait()
+}
