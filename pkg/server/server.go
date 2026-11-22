@@ -35,6 +35,13 @@ const (
 	defaultRsyncPortString = "873"
 )
 
+// Limits for module discovery, which parses data sent by an upstream.
+const (
+	discoverTimeout     = time.Minute
+	discoverMaxLineSize = 64 * 1024
+	discoverMaxLines    = 65536
+)
+
 // defaultRelayTeardownTimeout bounds how long the second relay direction may
 // keep running after the first one has finished.
 const defaultRelayTeardownTimeout = 10 * time.Second
@@ -225,6 +232,10 @@ type Server struct {
 
 	accessLog, accessJSONLog, errorLog *logging.FileLogger
 
+	// reloadMu serializes configuration reloads. reloadLock protects the
+	// fields that the data path reads; it is only held for the final
+	// in-memory swap, never across network or file I/O.
+	reloadMu   sync.Mutex
 	reloadLock sync.RWMutex
 	dialer     net.Dialer
 	// name -> upstream targets
@@ -387,9 +398,13 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 		})
 	}
 
-	s.reloadLock.Lock()
-	defer s.reloadLock.Unlock()
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
 
+	// Module discovery talks to the upstreams and can take as long as their
+	// timeouts. It therefore runs before reloadLock is taken: holding the
+	// write lock across network I/O froze every new client connection for
+	// the duration of the slowest upstream.
 	var discoveredModules map[string][]string
 	if openLog {
 		var err error
@@ -398,6 +413,9 @@ func (s *Server) loadConfig(c *Config, openLog bool) error {
 			return err
 		}
 	}
+
+	s.reloadLock.Lock()
+	defer s.reloadLock.Unlock()
 	resolvedUpstreams := resolveUpstreams(upstreams, discoveredModules)
 	modules := buildModuleTargets(resolvedUpstreams)
 	if s.ListenAddr == "" {
@@ -663,25 +681,34 @@ func buildModuleTargets(upstreams []upstreamConfig) map[string][]Target {
 }
 
 func (s *Server) ListUpstreamModules(name string, forceDiscover bool) ([]string, error) {
+	// Copy what is needed and release the lock before any network I/O.
+	var (
+		upstream upstreamConfig
+		found    bool
+	)
 	s.reloadLock.RLock()
-	defer s.reloadLock.RUnlock()
-	for _, upstream := range s.upstreams {
-		if upstream.Name != name {
-			continue
-		}
-		if forceDiscover {
-			modules, err := s.discoverModulesFromUpstream(context.Background(), upstream)
-			if err != nil {
-				return nil, fmt.Errorf("discover modules from upstream %s (%s): %w", upstream.Name, upstream.Target.Addr, err)
-			}
-			return modules, nil
-		} else {
-			modules := append([]string(nil), upstream.Modules...)
-			sort.Strings(modules)
-			return modules, nil
+	for i := range s.upstreams {
+		if s.upstreams[i].Name == name {
+			upstream = s.upstreams[i]
+			upstream.Modules = slices.Clone(upstream.Modules)
+			found = true
+			break
 		}
 	}
-	return nil, fmt.Errorf("unknown upstream: %s", name)
+	s.reloadLock.RUnlock()
+	if !found {
+		return nil, fmt.Errorf("unknown upstream: %s", name)
+	}
+
+	if forceDiscover {
+		modules, err := s.discoverModulesFromUpstream(context.Background(), upstream)
+		if err != nil {
+			return nil, fmt.Errorf("discover modules from upstream %s (%s): %w", upstream.Name, upstream.Target.Addr, err)
+		}
+		return modules, nil
+	}
+	sort.Strings(upstream.Modules)
+	return upstream.Modules, nil
 }
 
 func (s *Server) DiscoverModules(addr string) ([]string, error) {
@@ -719,11 +746,19 @@ func (s *Server) discoverConfiguredModules(ctx context.Context, upstreams []upst
 func (s *Server) discoverModulesFromUpstream(ctx context.Context, upstream upstreamConfig) ([]string, error) {
 	addr := upstream.Target.Addr
 	addr = addDefaultTCPPort(addr, defaultRsyncPortString)
-	conn, err := dialContextTCPOrUnix(ctx, s.dialer, addr)
+	conn, err := dialContextTCPOrUnix(ctx, s.getDialer(), addr)
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
 	}
 	defer conn.Close()
+	// One absolute deadline for the whole exchange: an upstream that keeps
+	// trickling lines must not be able to stretch a discovery (and with it
+	// a reload) indefinitely.
+	budget := s.ReadTimeout
+	if budget <= 0 {
+		budget = discoverTimeout
+	}
+	_ = conn.SetDeadline(time.Now().Add(budget))
 	if upstream.Target.UseProxyProtocol {
 		err := writeProxyProtocolHeader(conn, conn.LocalAddr(), conn.RemoteAddr(), s.WriteTimeout)
 		if err != nil {
@@ -731,36 +766,35 @@ func (s *Server) discoverModulesFromUpstream(ctx context.Context, upstream upstr
 		}
 	}
 
-	reader := bufio.NewReaderSize(conn, ReadBufferSize)
-	if _, err := writeWithTimeout(conn, RsyncdServerVersion, s.WriteTimeout); err != nil {
+	// Lines (motd, "name<TAB>comment") are bounded by the reader's buffer;
+	// readLine fails instead of growing without limit.
+	reader := bufio.NewReaderSize(conn, discoverMaxLineSize)
+	if _, err := conn.Write(RsyncdServerVersion); err != nil {
 		return nil, fmt.Errorf("send version: %w", err)
 	}
 
-	if s.ReadTimeout > 0 {
-		_ = conn.SetReadDeadline(time.Now().Add(s.ReadTimeout))
-	}
-	line, err := reader.ReadString(lineFeed)
+	rawLine, err := readLine(reader)
 	if err != nil {
 		return nil, fmt.Errorf("read version: %w", err)
 	}
-	if !bytes.HasPrefix([]byte(line), RsyncdVersionPrefix) {
-		return nil, fmt.Errorf("unexpected version response: %q", line)
+	if !bytes.HasPrefix(rawLine, RsyncdVersionPrefix) {
+		return nil, fmt.Errorf("unexpected version response: %q", rawLine)
 	}
 
-	if _, err := writeWithTimeout(conn, []byte{'\n'}, s.WriteTimeout); err != nil {
+	if _, err := conn.Write([]byte{'\n'}); err != nil {
 		return nil, fmt.Errorf("request module list: %w", err)
 	}
 
 	modules := make([]string, 0)
-	for {
-		if s.ReadTimeout > 0 {
-			_ = conn.SetReadDeadline(time.Now().Add(s.ReadTimeout))
+	for lines := 0; ; lines++ {
+		if lines >= discoverMaxLines {
+			return nil, fmt.Errorf("read module list: more than %d lines", discoverMaxLines)
 		}
-		line, err = reader.ReadString(lineFeed)
+		rawLine, err = readLine(reader)
 		if err != nil {
 			return nil, fmt.Errorf("read module list: %w", err)
 		}
-		line = strings.TrimSuffix(line, string(lineFeed))
+		line := strings.TrimSuffix(string(rawLine), string(lineFeed))
 		if strings.HasPrefix(line, string(RsyncdVersionPrefix)) {
 			break
 		}
@@ -768,6 +802,11 @@ func (s *Server) discoverModulesFromUpstream(ctx context.Context, upstream upstr
 		if len(fields) == 0 {
 			// Empty line, previous content is more likely part of MOTD, so discard them
 			modules = modules[:0]
+			continue
+		}
+		if !isValidModuleName(fields[0]) {
+			// Not something rsyncd would accept as a module name (motd
+			// text, control characters, ...): never route or log it.
 			continue
 		}
 		modules = append(modules, fields[0])
@@ -1389,6 +1428,13 @@ func (s *Server) runHTTPServer() error {
 
 		err := s.ReadConfigFromFile(true)
 		if err != nil {
+			// Reloads are what logrotate's postrotate triggers. Even if
+			// the new configuration cannot be applied (unreachable
+			// upstream, bad certificate, syntax error) the current log
+			// files must be reopened, otherwise the proxy keeps writing
+			// into the rotated files and the paths watched by fail2ban
+			// stay empty.
+			s.reopenLogs()
 			log.Printf("[ERROR] Load config: %s", err)
 			s.errorLog.F("[ERROR] Load config: %s", err)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -1443,6 +1489,14 @@ func (s *Server) runHTTPServer() error {
 	})
 
 	return http.Serve(s.HTTPListener, &mux)
+}
+
+func (s *Server) reopenLogs() {
+	for _, l := range []*logging.FileLogger{s.accessLog, s.accessJSONLog, s.errorLog} {
+		if err := l.Reopen(); err != nil {
+			log.Printf("[ERROR] reopen log: %s", err)
+		}
+	}
 }
 
 func (s *Server) Listen() error {

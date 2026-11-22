@@ -77,11 +77,14 @@ func (l *FileLogger) reopen() error {
 	if err != nil {
 		return err
 	}
-	if l.f != nil {
-		l.f.Close()
-	}
+	// Switch the logger to the new file before closing the old one so that
+	// a concurrent F()/Ln() never writes to a closed file.
+	old := l.f
 	l.f = f
 	l.l.SetOutput(f)
+	if old != nil {
+		old.Close()
+	}
 	return nil
 }
 

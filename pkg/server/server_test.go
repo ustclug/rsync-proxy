@@ -2025,3 +2025,95 @@ func TestRelayTeardownDoesNotHangOnBlockedWriter(t *testing.T) {
 		return srv.GetActiveConnectionCount() == 0 && q.ActiveLen() == 0
 	}, 5*time.Second, 50*time.Millisecond, "relay must be torn down and its queue slot released")
 }
+
+// TestReloadDoesNotBlockClientsDuringDiscovery verifies that a reload whose
+// module discovery hangs on an unresponsive upstream neither freezes the data
+// path nor skips reopening the log files.
+func TestReloadDoesNotBlockClientsDuringDiscovery(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	accessLogPath := filepath.Join(dir, "access.log")
+
+	var tarpit atomic.Bool
+	release := make(chan struct{})
+	upstream := rsync.NewServer(func(conn *rsync.Conn) {
+		defer conn.Close()
+		if tarpit.Load() {
+			<-release // accept, then never answer
+			return
+		}
+		if _, err := conn.ReadLine(); err != nil {
+			return
+		}
+		_, _ = conn.Write([]byte("@RSYNCD: 32.0 sha512 sha256 sha1 md5 md4\n"))
+		if _, err := conn.ReadLine(); err != nil {
+			return
+		}
+		_, _ = conn.Write([]byte("foo\tFOO\n@RSYNCD: EXIT\n"))
+	})
+	upstream.Start()
+	defer upstream.Close()
+	defer close(release)
+
+	require.NoError(t, os.WriteFile(configPath, []byte(fmt.Sprintf(`
+[proxy]
+listen = "127.0.0.1:0"
+listen_http = "127.0.0.1:0"
+access_log = %q
+
+[upstreams.u1]
+address = %q
+discover_modules = true
+`, accessLogPath, upstream.Listener.Addr().String())), 0600))
+
+	srv := New()
+	srv.ConfigPath = configPath
+	srv.ReadTimeout = 2 * time.Second
+	srv.WriteTimeout = 2 * time.Second
+	require.NoError(t, srv.ReadConfigFromFile(true))
+	require.NoError(t, srv.Listen())
+	defer srv.Close()
+	go func() { _ = srv.Run() }()
+
+	listModules := func() (string, time.Duration) {
+		start := time.Now()
+		c, err := net.DialTimeout("tcp", srv.TCPListener.Addr().String(), time.Second)
+		require.NoError(t, err)
+		defer c.Close()
+		conn := rsync.NewConn(c)
+		_, err = doClientHandshake(conn, RsyncdServerVersion, "")
+		require.NoError(t, err)
+		data, err := io.ReadAll(conn)
+		require.NoError(t, err)
+		return string(data), time.Since(start)
+	}
+	out, _ := listModules()
+	require.Contains(t, out, "foo\n")
+
+	// "logrotate": move the log away, then trigger a reload that will fail.
+	require.NoError(t, os.Rename(accessLogPath, accessLogPath+".1"))
+	tarpit.Store(true)
+	reloadDone := make(chan int, 1)
+	go func() {
+		resp, err := (&http.Client{Timeout: 10 * time.Second}).Post("http://"+srv.HTTPListener.Addr().String()+"/reload", "application/json", nil)
+		if err != nil {
+			reloadDone <- -1
+			return
+		}
+		resp.Body.Close()
+		reloadDone <- resp.StatusCode
+	}()
+	time.Sleep(300 * time.Millisecond) // the reload is now stuck in discovery
+
+	out, took := listModules()
+	assert.Contains(t, out, "foo\n")
+	assert.Less(t, took, time.Second, "clients must not wait for a reload that is talking to upstreams")
+
+	assert.Equal(t, http.StatusInternalServerError, <-reloadDone)
+	// the failed reload still reopened the log at its configured path
+	_, _ = listModules()
+	require.Eventually(t, func() bool {
+		data, err := os.ReadFile(accessLogPath)
+		return err == nil && strings.Contains(string(data), "requests listing all modules")
+	}, 2*time.Second, 20*time.Millisecond)
+}
