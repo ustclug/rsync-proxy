@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"strings"
 	"time"
@@ -29,6 +30,30 @@ func netAddrToString(addr net.Addr) string {
 	default:
 		return addr.String()
 	}
+}
+
+// perIPLimitKey returns the identity under which a client is accounted by
+// the per-IP cap: the address itself for IPv4 (including IPv4-mapped IPv6)
+// and the enclosing /64 for IPv6, since a single IPv6 host or customer
+// routinely controls at least a whole /64.
+func perIPLimitKey(addr net.Addr) string {
+	tcp, ok := addr.(*net.TCPAddr)
+	if !ok {
+		return addr.String()
+	}
+	ip, ok := netip.AddrFromSlice(tcp.IP)
+	if !ok {
+		return tcp.IP.String()
+	}
+	ip = ip.Unmap()
+	if ip.Is4() {
+		return ip.String()
+	}
+	prefix, err := ip.Prefix(64)
+	if err != nil {
+		return ip.String()
+	}
+	return prefix.String()
 }
 
 func writeProxyProtocolHeader(conn net.Conn, sourceAddr, destAddr net.Addr, writeTimeout time.Duration) error {

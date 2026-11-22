@@ -46,7 +46,8 @@ motd = "Served by rsync-proxy (https://github.com/ustclug/rsync-proxy)"
 # override this via its own per_ip_max_active_connections setting
 # below. Be cautious when many legitimate clients share a single
 # egress IP (NAT, campus networks): set the cap large enough to
-# accommodate them.
+# accommodate them. IPv6 clients are counted per /64 (one host or
+# customer routinely controls a whole /64), IPv4 clients per address.
 #per_ip_max_active_connections = 0
 
 # Connect timeout (seconds) when dialing upstreams. Bounds how long

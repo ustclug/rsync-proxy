@@ -253,10 +253,9 @@ type Server struct {
 	// map key is moduleUpstreamKey. Value is *moduleCounters.
 	moduleCounters sync.Map
 
-	// Per-(upstream, client IP) active-connection counters.
-	// Lazy-initialized via getPerIPCounter.
-	// map key is perIPCountKey. Value is *atomic.Int64.
-	perIPCounts sync.Map
+	// Per-(upstream, client) active-connection counters, see
+	// perIPTracker.
+	perIPConns perIPTracker
 
 	TCPListener  net.Listener
 	TLSListener  net.Listener
@@ -532,15 +531,45 @@ func (s *Server) getModuleCounters(module, upstream string) *moduleCounters {
 	return v.(*moduleCounters)
 }
 
-// getPerIPCounter returns the (upstream, ip) active-connection counter,
-// creating it lazily. Safe for concurrent use.
-func (s *Server) getPerIPCounter(upstream, ip string) *atomic.Int64 {
-	key := perIPCountKey{upstream: upstream, ip: ip}
-	if v, ok := s.perIPCounts.Load(key); ok {
-		return v.(*atomic.Int64)
+// perIPTracker counts concurrent connections per (upstream, client) pair
+// for the per-IP cap. Entries are removed as soon as they drop back to
+// zero, so the map is bounded by the number of clients that are connected
+// right now instead of growing with every address ever seen.
+type perIPTracker struct {
+	mu     sync.Mutex
+	counts map[perIPCountKey]int
+}
+
+// acquire reserves one slot for key and reports whether it stayed within
+// limit.
+func (t *perIPTracker) acquire(key perIPCountKey, limit int) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.counts[key] >= limit {
+		return false
 	}
-	v, _ := s.perIPCounts.LoadOrStore(key, &atomic.Int64{})
-	return v.(*atomic.Int64)
+	if t.counts == nil {
+		t.counts = make(map[perIPCountKey]int)
+	}
+	t.counts[key]++
+	return true
+}
+
+// release gives back a slot obtained from a successful acquire.
+func (t *perIPTracker) release(key perIPCountKey) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if n := t.counts[key]; n > 1 {
+		t.counts[key] = n - 1
+	} else {
+		delete(t.counts, key)
+	}
+}
+
+func (t *perIPTracker) size() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.counts)
 }
 
 // getDialer returns a copy of the current upstream dialer, taking the
@@ -946,16 +975,17 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) (re
 	// admission so the cap also bounds queueing, preventing a single
 	// IP from monopolizing both the active slots and the queue.
 	if perIPLimit := s.getPerIPLimitForUpstream(target.Upstream); perIPLimit > 0 {
-		counter := s.getPerIPCounter(target.Upstream, ip)
-		if n := counter.Add(1); n > int64(perIPLimit) {
-			counter.Add(-1)
+		// IPv6 clients are accounted per /64: rotating through the
+		// addresses of one's own prefix must not multiply the allowance.
+		key := perIPCountKey{upstream: target.Upstream, ip: perIPLimitKey(downConn.RemoteAddr())}
+		if !s.perIPConns.acquire(key, perIPLimit) {
 			s.getUpstreamCounters(target.Upstream).perIPRejected.Add(1)
 			record.Status = http.StatusTooManyRequests
 			s.accessLog.F("client %s rejected for upstream %s module %s: per-IP cap of %d reached", ip, target.Upstream, moduleName, perIPLimit)
 			_, _ = writeWithTimeout(downConn, fmt.Appendf(nil, "@ERROR: per-IP connection limit of %d for upstream %s reached, retry later\n", perIPLimit, target.Upstream), writeTimeout)
 			return nil
 		}
-		defer counter.Add(-1)
+		defer s.perIPConns.release(key)
 	}
 
 	handle := upstreamQueue.Acquire()

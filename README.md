@@ -89,7 +89,7 @@ cp fail2ban/filter.d/* /etc/fail2ban/filter.d/
 | `relay_idle_timeout` | int 秒 | 0 | relay 阶段双向无 I/O 多久后关闭连接。语义同 rsyncd `timeout`。 | `600` |
 | `relay_max_duration` | int 秒 | 0 | relay 阶段总时长上限。超时关闭；rsync 本身不会自动重连，是否续传取决于调用方（脚本/cron）。 | `14400`（4h） |
 | `tcp_keepalive` | int 秒 | 0 | 客户端连接和上游连接的 TCP keepalive 周期，0 沿用 OS 默认（通常 ~2h）。 | `120` |
-| `per_ip_max_active_connections` | int | 0 | 单 IP 对单上游最多并发 relay 连接数，proxy-wide 默认值。NAT/校园出口 IP 时取值需放宽。 | `4` |
+| `per_ip_max_active_connections` | int | 0 | 单 IP 对单上游最多并发 relay 连接数，proxy-wide 默认值。IPv4 按单个地址计数，IPv6 按 /64 前缀计数。NAT/校园出口 IP 时取值需放宽。 | `4` |
 | `dial_timeout` | int 秒 | 0 | 拨号上游的超时；0 沿用内核 SYN 重试（~75s）。 | `5`（LAN） |
 | `min_throughput_bytes` | int64 字节 | 0 | relay 阶段最近 `min_throughput_window` 秒内累计收发须 ≥ 此值，否则视作慢速吸血并关闭。0 关闭整组检查。 | `1048576` |
 | `min_throughput_window` | int 秒 | 60 | 上述滑动窗口长度。有效下限 = `min_throughput_bytes` / 本值；窗口越短反应越快但等效速率越高。 | `300`（≈3.4 KiB/s） |
