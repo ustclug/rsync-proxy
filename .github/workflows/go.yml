@@ -38,3 +38,13 @@ jobs:
         args: release --clean
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Publish release metadata
+      shell: bash
+      if: startsWith(github.ref, 'refs/tags/')
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        gh release view "$GITHUB_REF_NAME" --json tagName,assets |
+          jq '{tag: .tagName, assets: [.assets[] | select(.name != "metadata.json") | {name, url}]}' > metadata.json
+        gh release upload "$GITHUB_REF_NAME" metadata.json --clobber
