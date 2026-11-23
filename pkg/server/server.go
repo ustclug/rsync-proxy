@@ -896,13 +896,15 @@ func (s *Server) relay(ctx context.Context, index uint32, downConn net.Conn) (re
 		Status:         http.StatusOK,
 		RsyncVersion:   "-",
 		RsyncdVersion:  "-",
-		TLSProtocol:    tlsProtocolVersion(downConn),
 	}
 	defer func() {
 		now := time.Now()
 		if returnErr != nil && record.Status == http.StatusOK {
 			record.Status = http.StatusInternalServerError
 		}
+		// The TLS handshake runs lazily inside the first Read, so the
+		// negotiated version is only known by now.
+		record.TLSProtocol = tlsProtocolVersion(downConn)
 		record.Timestamp = float64(now.UnixMilli()) / 1000
 		record.BytesReceived = info.ReceivedBytes.Load()
 		record.BytesSent = info.SentBytes.Load()
@@ -1352,7 +1354,11 @@ func tlsProtocolVersion(conn net.Conn) string {
 	if !ok {
 		return ""
 	}
-	return tls.VersionName(tlsConn.ConnectionState().Version)
+	state := tlsConn.ConnectionState()
+	if !state.HandshakeComplete {
+		return "-"
+	}
+	return tls.VersionName(state.Version)
 }
 
 func (s *Server) GetActiveConnectionCount() int64 {
